@@ -4,7 +4,125 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
 <title>ボイス相撲</title>
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script>window.VOICE_SUMO_FIREBASE = {"apiKey":"AIzaSyDEQ6rcy3HVKLb-eTGLxwzbAIiTBoXTU7s","authDomain":"voice-sumo.firebaseapp.com","databaseURL":"https://voice-sumo-default-rtdb.asia-southeast1.firebasedatabase.app","projectId":"voice-sumo","storageBucket":"voice-sumo.firebasestorage.app","messagingSenderId":"387119119817","appId":"1:387119119817:web:e2f5eb4b00661051103c18"};
+(function () {
+  'use strict';
+  window.createVoiceSumoTransport = function (config, events) {
+    let db, uid, room, guestRef, disconnectRef;
+    let closed = false, opened = false, wasOnline = false, hosting = false;
+    let pending = null, sending = false, lastSent = 0, flushTimer = null;
+    const listeners = [];
+    const fail = error => { if (!closed) events.error(error); };
+    function listen(ref, callback) {
+      ref.on('value', callback, fail); listeners.push([ref, callback]);
+    }
+    function open() {
+      if (!closed && !opened) { opened = true; events.open(); }
+    }
+    async function init() {
+      if (!config || !config.databaseURL) throw new Error('通信先の設定が完了していません');
+      if (!window.firebase) throw new Error('通信機能を読み込めません。ページを再読み込みしてください');
+      const app = firebase.apps.find(a => a.name === 'voice-sumo') || firebase.initializeApp(config, 'voice-sumo');
+      const auth = app.auth();
+      await auth.setPersistence(firebase.auth.Auth.Persistence.NONE);
+      const user = auth.currentUser || (await auth.signInAnonymously()).user;
+      if (closed) throw new Error('接続をキャンセルしました');
+      uid = user.uid; db = app.database();
+      listen(db.ref('.info/connected'), snap => {
+        if (closed) return;
+        if (snap.val()) wasOnline = true;
+        else if (wasOnline && room) events.close('通信が切れました。部屋を作り直してください');
+      });
+    }
+    async function create(name) {
+      hosting = true; await init();
+      for (let attempt = 0; attempt < 10; attempt++) {
+        if (closed) return;
+        const code = String(Math.floor(1000 + Math.random() * 9000));
+        const candidate = db.ref('voiceSumoRooms/' + code);
+        const result = await candidate.transaction(current => current ? undefined : {
+          hostUid: uid, hostName: name, createdAt: firebase.database.ServerValue.TIMESTAMP
+        }, undefined, false);
+        if (!result.committed) continue;
+        room = candidate;
+        if (closed) { await candidate.remove(); return; }
+        disconnectRef = room.onDisconnect(); await disconnectRef.remove();
+        if (closed) { await candidate.remove(); return; }
+        events.room(code);
+        listen(room.child('guest'), snap => {
+          if (closed) return;
+          const player = snap.val();
+          if (!player) { if (opened) events.close('相手が退出しました'); return; }
+          if (!opened) { events.data({ t: 'hello', name: player.name }); open(); }
+          events.data({ t: 'vol', v: player.v });
+          events.data({ t: 'ready', on: player.ready });
+        });
+        return;
+      }
+      throw new Error('部屋を作れませんでした。もう一度お試しください');
+    }
+    async function join(code, name) {
+      await init(); if (closed) return;
+      room = db.ref('voiceSumoRooms/' + code);
+      const snapshot = await room.once('value'); const value = snapshot.val();
+      if (closed) return;
+      if (!value || !value.hostUid) throw new Error('その部屋は見つかりません。相手に部屋を作り直してもらってください');
+      if (value.hostUid === uid) throw new Error('同じブラウザーでは参加できません。別の端末で開いてください');
+      if (value.guest && value.guest.uid !== uid) throw new Error('その部屋は満員です');
+      const candidate = room.child('guest');
+      const result = await candidate.transaction(current => {
+        if (current && current.uid !== uid) return;
+        return { uid, name, v: 0, ready: false };
+      }, undefined, false);
+      if (!result.committed) throw new Error('その部屋は満員です');
+      guestRef = candidate;
+      if (closed) { await candidate.remove(); return; }
+      disconnectRef = guestRef.onDisconnect(); await disconnectRef.remove();
+      if (closed) { await guestRef.remove(); return; }
+      listen(room, snap => {
+        if (closed) return;
+        const current = snap.val();
+        if (!current || !current.guest || current.guest.uid !== uid) {
+          events.close('部屋が閉じられました。相手に部屋を作り直してもらってください'); return;
+        }
+        if (current.state) { open(); events.data(current.state); }
+      });
+    }
+    function send(message) {
+      if (closed || !opened) return;
+      if (hosting && message.t === 'state') pending = { ...message };
+      else if (!hosting && message.t === 'vol') pending = { ...(pending || {}), v: message.v };
+      else if (!hosting && message.t === 'ready') pending = { ...(pending || {}), ready: message.on };
+      else return;
+      schedule();
+    }
+    function schedule() {
+      if (closed || sending || flushTimer || !pending) return;
+      flushTimer = setTimeout(flush, Math.max(0, 100 - (Date.now() - lastSent)));
+    }
+    async function flush() {
+      flushTimer = null; if (closed || !pending) return;
+      const payload = pending; pending = null; sending = true; lastSent = Date.now();
+      try {
+        if (hosting) await room.child('state').set(payload);
+        else await guestRef.update(payload);
+      } catch (error) { fail(error); }
+      finally { sending = false; schedule(); }
+    }
+    function close() {
+      if (closed) return;
+      closed = true; clearTimeout(flushTimer); pending = null;
+      listeners.forEach(([ref, callback]) => ref.off('value', callback));
+      const owned = hosting ? room : guestRef;
+      if (owned) owned.remove().then(() => disconnectRef && disconnectRef.cancel()).catch(() => {});
+    }
+    return { create, join, send, close };
+  };
+})();
+</script>
 <style>
 :root{
   --bg:#1b1410; --panel:#2a201a; --ink:#f6efe3; --sub:#c9b9a3; --accent:#e0a63a;
@@ -194,13 +312,12 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 (() => {
 'use strict';
 const $ = s => document.querySelector(s);
-const PREFIX = 'voicesumo-v1-';
 const TICK = 33;               // ms
 const BOUT_TIME = 30;          // 秒（時間切れは前に出ている方の勝ち）
 
 // ---------- 状態 ----------
 let role = null;               // 'host' | 'guest'
-let peer = null, conn = null;
+
 let loopTimer = null;
 let oppVol = 0, oppVolAt = 0;
 const S = {                    // ホストが持つ正の状態（ゲストは受信して表示）
@@ -302,18 +419,11 @@ async function needMic() {
   return ok;
 }
 
-$('#btnCreate').onclick = async () => {
-  if (!await needMic()) return;
-  role = 'host';
-  S.names[0] = myName();
-  try { createRoom(0); } catch (e) { titleErr(e.message); role = null; }
-};
-$('#btnJoin').onclick = async () => {
-  const code = $('#joinCode').value.replace(/\D/g, '');
-  if (code.length !== 4) { titleErr('4桁の部屋番号を入れてください'); return; }
-  if (!await needMic()) return;
-  role = 'guest';
-  try { joinRoom(code); } catch (e) { titleErr(e.message); role = null; }
+$('#btnCreate').onclick = () => connectOnline('host');
+$('#btnJoin').onclick = () => {
+ const code = $('#joinCode').value.normalize('NFKC').replace(/\D/g, '');
+ if (code.length !== 4) { titleErr('4桁の部屋番号を入れてください'); return; }
+ connectOnline('guest', code);
 };
 $('#btnPractice').onclick = async () => {
   if (!await needMic()) return;
@@ -321,58 +431,54 @@ $('#btnPractice').onclick = async () => {
   startPractice();
 };
 
-// ---------- オンライン ----------
-function newPeer(id) {
-  if (typeof Peer === 'undefined') throw new Error('PeerJS が読み込めません（ネット接続を確認してください）');
-  // PeerJS の無料シグナリングサーバ経由で WebRTC 直接接続
-  return id ? new Peer(id, {debug: 1}) : new Peer({debug: 1});
+// ---------- オンライン（ボイス相撲専用Firebase） ----------
+let transport = null, connecting = false, connectionTimer = null;
+function setConnecting(value) {
+  connecting = value;
+  ['#btnCreate','#btnJoin','#btnPractice'].forEach(id => { $(id).disabled = value; });
 }
-function createRoom(tries) {
-  const code = String(Math.floor(1000 + Math.random() * 9000));
-  peer = newPeer(PREFIX + code);
-  peer.on('open', () => {
-    $('#roomCode').textContent = code;
-    $('#waitStatus').textContent = '相手の入場を待っています…';
-    show('wait');
-  });
-  peer.on('error', e => {
-    if (e.type === 'unavailable-id' && tries < 5) { peer.destroy(); createRoom(tries + 1); return; }
-    console.warn(e);
-    if (!conn) { titleErr('通信エラー：' + e.type); cleanup(); show('title'); }
-  });
-  peer.on('connection', c => {
-    if (conn && conn.open) { c.on('open', () => { c.send({t: 'full'}); setTimeout(() => c.close(), 300); }); return; }
-    setupConn(c);
-  });
+function networkError(error) {
+  const code = error && error.code || '';
+  if (/permission.denied|PERMISSION_DENIED/i.test(code)) return '通信の設定を確認中です。しばらくしてからお試しください。';
+  if (/network|disconnected/i.test(code)) return 'ネット接続を確認して、もう一度お試しください。';
+  return error && error.message || '接続できませんでした。もう一度お試しください。';
 }
-function joinRoom(code) {
-  peer = newPeer();
-  titleErr('接続中…');
-  const failTimer = setTimeout(() => { if (!conn || !conn.open) { titleErr('つながりませんでした。部屋番号を確認してください。'); cleanup(); } }, 12000);
-  peer.on('open', () => {
-    const c = peer.connect(PREFIX + code, {reliable: true, serialization: 'json'});
-    setupConn(c, () => clearTimeout(failTimer));
-  });
-  peer.on('error', e => {
-    console.warn(e);
-    clearTimeout(failTimer);
-    titleErr(e.type === 'peer-unavailable' ? 'その部屋は見つかりません' : '通信エラー：' + e.type);
-    cleanup();
-  });
+async function connectOnline(kind, code) {
+  if (connecting) return;
+  cleanup(); setConnecting(true);
+  if (!await needMic()) { setConnecting(false); return; }
+  role = kind; S.names[0] = kind === 'host' ? myName() : '';
+  titleErr(kind === 'host' ? '部屋を作っています…' : '接続中…');
+  let current;
+  const fail = error => {
+    if (current && transport !== current) return;
+    cleanup(); role = null; show('title'); titleErr(networkError(error));
+  };
+  try {
+    current = window.createVoiceSumoTransport(window.VOICE_SUMO_FIREBASE, {
+      room: roomCode => {
+        if (transport !== current) return;
+        clearTimeout(connectionTimer); connectionTimer = null;
+        setConnecting(false); titleErr(''); $('#roomCode').textContent = roomCode;
+        $('#waitStatus').textContent = '相手の入場を待っています…'; show('wait');
+      },
+      open: () => {
+        if (transport !== current) return;
+        clearTimeout(connectionTimer); connectionTimer = null;
+        setConnecting(false); titleErr('');
+        if (role === 'host') { resetMatch(true); startGame(); hostStep(); }
+      },
+      data: data => { if (transport === current) onData(data); },
+      close: message => { if (transport === current) disconnected(message); },
+      error: fail
+    });
+    transport = current;
+    connectionTimer = setTimeout(() => fail(new Error('接続がタイムアウトしました。ネット接続を確認して、もう一度お試しください。')), 25000);
+    if (kind === 'host') await current.create(S.names[0]);
+    else await current.join(code, myName());
+  } catch (error) { fail(error); }
 }
-function setupConn(c, onOpen) {
-  conn = c;
-  c.on('open', () => {
-    onOpen && onOpen();
-    titleErr('');
-    send({t: 'hello', name: role === 'host' ? S.names[0] : myName()});
-    if (role === 'host') { resetMatch(true); startGame(); }
-  });
-  c.on('data', onData);
-  c.on('close', () => { if (conn === c) disconnected(); });
-  c.on('error', e => console.warn(e));
-}
-function send(o) { if (conn && conn.open) { try { conn.send(o); } catch(e) {} } }
+function send(message) { if (transport) transport.send(message); }
 
 function onData(d) {
   if (!d || typeof d !== 'object') return;
@@ -396,19 +502,14 @@ function onData(d) {
 }
 function clampN(x, a, b) { x = Number(x); return isFinite(x) ? Math.max(a, Math.min(b, x)) : 0; }
 
-function disconnected() {
-  if (role === 'host' || role === 'guest') {
-    stopLoop();
-    cleanup();
-    titleErr('相手との接続が切れました');
-    show('title');
-  }
+function disconnected(message) {
+ cleanup(); role = null;
+ titleErr(message || '相手との接続が切れました'); show('title');
 }
 function cleanup() {
-  stopLoop();
-  if (conn) { try { conn.close(); } catch(e) {} }
-  if (peer) { try { peer.destroy(); } catch(e) {} }
-  conn = null; peer = null;
+ stopLoop(); clearTimeout(connectionTimer); connectionTimer = null;
+ const previous = transport; transport = null; setConnecting(false);
+ if (previous) previous.close();
 }
 
 $('#btnCancel').onclick = () => { cleanup(); role = null; show('title'); };
