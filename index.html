@@ -93,7 +93,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 <section id="title" class="screen on">
   <h1><small>大声で押し出せ</small>ボイス相撲</h1>
   <div class="card">
-    <label for="name">しこ名</label>
+    <label for="name">プレイヤー名</label>
     <input id="name" type="text" maxlength="8" placeholder="例：大声山">
     <button class="btn" id="btnCreate">部屋を作る</button>
     <div class="row">
@@ -424,7 +424,7 @@ $('#btnLeave').onclick = () => { cleanup(); role = null; show('title'); };
 // ?room=1234 で開かれたら番号を入れておく
 (() => {
   const r = new URLSearchParams(location.search).get('room');
-  if (r && /^\d{4}$/.test(r)) { $('#joinCode').value = r; titleErr('しこ名を入れて「入る」を押してください'); }
+  if (r && /^\d{4}$/.test(r)) { $('#joinCode').value = r; titleErr('プレイヤー名を入れて「入る」を押してください'); }
 })();
 
 // ---------- 試合ロジック（ホスト） ----------
