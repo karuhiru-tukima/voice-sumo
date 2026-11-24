@@ -1,0 +1,803 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>ボイス相撲</title>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style>
+:root{
+  --bg:#1b1410; --panel:#2a201a; --ink:#f6efe3; --sub:#c9b9a3; --accent:#e0a63a;
+  --west:#d2452f; --east:#3a5fcd; --line:#4a3a2e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--ink);font-family:"Hiragino Mincho ProN","Yu Mincho","Noto Serif JP",serif;
+  -webkit-user-select:none;user-select:none;overflow-x:hidden}
+button,input{font:inherit}
+.screen{display:none;min-height:100%;flex-direction:column;align-items:center;justify-content:center;padding:20px 16px;gap:16px}
+.screen.on{display:flex}
+h1{font-size:clamp(44px,13vw,84px);letter-spacing:.1em;line-height:1.1;text-align:center;
+  text-shadow:0 4px 0 #000,0 0 30px rgba(224,166,58,.35)}
+h1 small{display:block;font-size:.28em;letter-spacing:.3em;color:var(--accent);margin-bottom:6px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;width:100%;max-width:380px;display:flex;flex-direction:column;gap:12px}
+label{font-size:13px;color:var(--sub)}
+input[type=text],input[type=tel]{width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:#120d0a;color:var(--ink);font-size:18px}
+.btn{padding:14px;border-radius:10px;border:none;font-size:18px;font-weight:bold;cursor:pointer;background:var(--accent);color:#221;letter-spacing:.08em}
+.btn:active{transform:translateY(1px)}
+.btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+.btn:disabled{opacity:.45;cursor:default}
+.row{display:flex;gap:8px}
+.row>*{flex:1}
+.code{font-size:56px;letter-spacing:.25em;text-align:center;font-family:ui-monospace,Consolas,monospace;color:var(--accent)}
+.hint{font-size:13px;color:var(--sub);text-align:center;line-height:1.6}
+.err{color:#ff8a7a;font-size:14px;text-align:center;min-height:1em}
+/* game */
+#game{justify-content:flex-start;padding-top:max(12px,env(safe-area-inset-top))}
+.hud{width:100%;max-width:720px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.side{flex:1;display:flex;flex-direction:column;gap:4px;min-width:0}
+.side.e{align-items:flex-end;text-align:right}
+.nm{font-size:20px;font-weight:bold;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.nm .you{font-size:11px;background:var(--accent);color:#221;border-radius:4px;padding:1px 5px;margin:0 4px;vertical-align:middle}
+.w .nm{color:#ff9d8a}.e .nm{color:#9db4ff}
+.score{font-size:30px;font-family:ui-monospace,Consolas,monospace;padding:0 6px}
+.meter{width:100%;height:14px;background:#120d0a;border-radius:7px;border:1px solid var(--line);position:relative}
+.meter i{display:block;height:100%;width:0;border-radius:7px;position:relative;z-index:5}
+/* 枠は 100。それより大きい声はバーがそのまま枠の外へ伸びる */
+.meter::after{content:"";position:absolute;right:-1px;top:-3px;bottom:-3px;width:2px;background:var(--ink);opacity:.7;z-index:6}
+.w .meter i{background:linear-gradient(90deg,#7a2316,var(--west),#ffcf6b)}
+.e .meter{transform:scaleX(-1)}
+.e .meter i{background:linear-gradient(90deg,#1d2f6b,var(--east),#9fe0ff)}
+/* 稽古場 */
+#practice{justify-content:flex-start;gap:12px;padding-top:max(16px,env(safe-area-inset-top))}
+.ptitle{font-size:28px;letter-spacing:.3em}
+.pnow{width:100%;max-width:520px;text-align:center}
+.big{font-size:clamp(72px,24vw,120px);font-weight:bold;line-height:1;font-family:ui-monospace,Consolas,monospace;color:var(--accent);
+  font-variant-numeric:tabular-nums}
+.bigsub{font-size:12px;color:var(--sub);margin:4px 0 8px}
+.pmeter{height:20px;border-radius:10px;position:relative;width:76%}
+.pmeter i{background:linear-gradient(90deg,#6b4a1a,var(--accent),#ff6a3d);border-radius:10px}
+.pmeter .thr{position:absolute;left:30%;top:-3px;bottom:-3px;width:2px;background:#ffe066}
+.pgraph{width:100%;max-width:520px;height:140px;background:#120d0a;border:1px solid var(--line);border-radius:12px}
+.pgrid{width:100%;max-width:520px;display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.pbox{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 12px}
+.lab{font-size:12px;color:var(--sub)}
+.val{font-size:36px;font-weight:bold;font-family:ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums}
+.val small{font-size:14px;margin-left:4px;color:var(--sub)}
+.pcard{max-width:520px}
+.pres{display:flex;gap:8px;flex-wrap:wrap}
+.pres>div{flex:1;min-width:90px;background:#120d0a;border-radius:8px;padding:8px;display:flex;flex-direction:column;align-items:center}
+.pres .k{font-size:11px;color:var(--sub)}
+.pres span:last-child{font-size:22px;font-weight:bold;font-family:ui-monospace,Consolas,monospace}
+.pres .new{color:#ffe066}
+.btn.small{padding:8px;font-size:14px}
+.stage{position:relative;width:100%;max-width:720px;aspect-ratio:16/10}
+canvas{width:100%;height:100%;display:block;border-radius:14px}
+#msg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;text-align:center;
+  font-size:clamp(34px,10vw,72px);font-weight:bold;text-shadow:0 4px 0 #000,0 0 18px #000;letter-spacing:.08em;line-height:1.2}
+#msg.pop{animation:pop .45s ease-out}
+@keyframes pop{0%{transform:scale(1.8);opacity:0}100%{transform:scale(1);opacity:1}}
+.controls{width:100%;max-width:720px;display:flex;flex-direction:column;gap:10px}
+.status{text-align:center;color:var(--sub);font-size:14px;min-height:1.4em}
+details{font-size:13px;color:var(--sub)}
+details summary{cursor:pointer;padding:4px 0}
+input[type=range]{width:100%;accent-color:var(--accent)}
+.mymeter{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--sub)}
+.mymeter .meter{flex:1}
+.mymeter .meter i{background:var(--accent)}
+</style>
+</head>
+<body>
+
+<!-- タイトル -->
+<section id="title" class="screen on">
+  <h1><small>大声で押し出せ</small>ボイス相撲</h1>
+  <div class="card">
+    <label for="name">しこ名</label>
+    <input id="name" type="text" maxlength="8" placeholder="例：大声山">
+    <button class="btn" id="btnCreate">部屋を作る</button>
+    <div class="row">
+      <input id="joinCode" type="tel" inputmode="numeric" maxlength="4" placeholder="部屋番号">
+      <button class="btn ghost" id="btnJoin">入る</button>
+    </div>
+    <button class="btn ghost" id="btnPractice">稽古場（声の測定）</button>
+    <div class="err" id="titleErr"></div>
+  </div>
+  <p class="hint">2台の端末で対戦します。<br>片方が「部屋を作る」、もう片方が部屋番号を入れて「入る」。<br>マイクの使用を許可してください。</p>
+  <p class="hint">声が大きい方が押す。土俵の外に出したら勝ち。</p>
+</section>
+
+<!-- 待機 -->
+<section id="wait" class="screen">
+  <div class="card">
+    <p class="hint">部屋番号</p>
+    <div class="code" id="roomCode">----</div>
+    <button class="btn ghost" id="btnShare">招待リンクをコピー</button>
+    <p class="hint" id="waitStatus">相手の入場を待っています…</p>
+    <button class="btn ghost" id="btnCancel">やめる</button>
+  </div>
+</section>
+
+<!-- 稽古場 -->
+<section id="practice" class="screen">
+  <h2 class="ptitle">稽古場</h2>
+  <div class="pnow">
+    <div class="big" id="pLevel">0</div>
+    <div class="bigsub">今の声の大きさ（上限なし・100がふつうの大声の目安）</div>
+    <div class="meter pmeter"><i id="pMeter"></i><b class="thr"></b></div>
+  </div>
+  <canvas id="pGraph" class="pgraph"></canvas>
+  <div class="pgrid">
+    <div class="pbox"><div class="lab">今の声の長さ</div><div class="val"><span id="pCurDur">0.0</span><small>秒</small></div></div>
+    <div class="pbox"><div class="lab">今の声の最大</div><div class="val" id="pCurPeak">0</div></div>
+  </div>
+  <div class="card pcard">
+    <div class="lab">直前の一声</div>
+    <div class="pres">
+      <div><span class="k">最大</span><span id="pLastPeak">-</span></div>
+      <div><span class="k">平均</span><span id="pLastAvg">-</span></div>
+      <div><span class="k">長さ</span><span id="pLastDur">-</span></div>
+    </div>
+    <div class="lab">自己ベスト</div>
+    <div class="pres">
+      <div><span class="k">最大の声</span><span id="pBestPeak">-</span></div>
+      <div><span class="k">最長の声</span><span id="pBestDur">-</span></div>
+    </div>
+    <button class="btn ghost small" id="pReset">記録を消す</button>
+  </div>
+  <details class="pcard" style="width:100%;max-width:520px">
+    <summary>マイク設定</summary>
+    <div style="display:flex;flex-direction:column;gap:8px;padding:6px 0">
+      <label>感度（小さい声でも反応しやすく → 右）</label>
+      <input type="range" id="sensP" min="0" max="20" step="1" value="8">
+      <button class="btn ghost" id="btnCalibP">周りの雑音を測り直す（静かにして押す）</button>
+    </div>
+  </details>
+  <p class="hint">黄色の線（30）を超えている間を「声が出ている」として長さを測ります。</p>
+  <button class="btn ghost" id="pBack" style="width:100%;max-width:520px">戻る</button>
+</section>
+
+<!-- 取組 -->
+<section id="game" class="screen">
+  <div class="hud">
+    <div class="side w">
+      <div class="nm" id="nmW">東</div>
+      <div class="meter"><i id="mW"></i></div>
+    </div>
+    <div class="score" id="score">0-0</div>
+    <div class="side e">
+      <div class="nm" id="nmE">西</div>
+      <div class="meter"><i id="mE"></i></div>
+    </div>
+  </div>
+  <div class="stage">
+    <canvas id="cv"></canvas>
+    <div id="msg"></div>
+  </div>
+  <div class="controls">
+    <div class="status" id="status"></div>
+    <button class="btn" id="btnReady">準備OK</button>
+    <details>
+      <summary>マイク設定</summary>
+      <div style="display:flex;flex-direction:column;gap:8px;padding:6px 0">
+        <div class="mymeter">自分の声 <div class="meter"><i id="mMe"></i></div></div>
+        <label>感度（小さい声でも反応しやすく → 右）</label>
+        <input type="range" id="sens" min="0" max="20" step="1" value="8">
+        <button class="btn ghost" id="btnCalib">周りの雑音を測り直す（静かにして押す）</button>
+      </div>
+    </details>
+    <button class="btn ghost" id="btnLeave">土俵を降りる</button>
+  </div>
+</section>
+
+<script>
+(() => {
+'use strict';
+const $ = s => document.querySelector(s);
+const PREFIX = 'voicesumo-v1-';
+const TICK = 33;               // ms
+const BOUT_TIME = 30;          // 秒（時間切れは前に出ている方の勝ち）
+
+// ---------- 状態 ----------
+let role = null;               // 'host' | 'guest'
+let peer = null, conn = null;
+let loopTimer = null;
+let oppVol = 0, oppVolAt = 0;
+const S = {                    // ホストが持つ正の状態（ゲストは受信して表示）
+  phase: 'wait',               // wait | count | fight | end
+  pos: 0, vel: 0,              // pos: -1(東の負け)…+1(西の負け)
+  v: [0, 0],                   // 声の大きさ 0〜（上限なし）  [0]=東(ホスト) [1]=西(ゲスト)
+  ready: [false, false],
+  names: ['', ''],
+  score: [0, 0],
+  t0: 0, winner: -1, reason: ''
+};
+let viewPos = 0;               // 描画用に補間した位置
+const me = () => role === 'guest' ? 1 : 0;
+
+// ---------- 名前 ----------
+const nameIn = $('#name');
+try { nameIn.value = localStorage.getItem('vs_name') || ''; } catch(e) {}
+function myName() {
+  const n = nameIn.value.trim().slice(0, 8) || (role === 'guest' ? '西ノ海' : '東ノ山');
+  try { localStorage.setItem('vs_name', nameIn.value.trim()); } catch(e) {}
+  return n;
+}
+
+// ---------- マイク ----------
+const mic = {an: null, buf: null, floor: -60, level: 0, ok: false};
+const sensIn = $('#sens');
+try { const s = localStorage.getItem('vs_sens'); if (s !== null) sensIn.value = s; } catch(e) {}
+sensIn.addEventListener('input', () => { try { localStorage.setItem('vs_sens', sensIn.value); } catch(e) {} });
+
+async function initMic() {
+  if (mic.ok) return true;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {echoCancellation: false, noiseSuppression: false, autoGainControl: false}
+    });
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === 'suspended') await ctx.resume();
+    const src = ctx.createMediaStreamSource(stream);
+    const an = ctx.createAnalyser();
+    an.fftSize = 1024;
+    src.connect(an);
+    mic.an = an; mic.buf = new Float32Array(an.fftSize); mic.ok = true;
+    calibrate();
+    return true;
+  } catch (e) {
+    console.warn(e);
+    return false;
+  }
+}
+function rawDb() {
+  if (!mic.an) return -100;
+  mic.an.getFloatTimeDomainData(mic.buf);
+  let sum = 0;
+  for (let i = 0; i < mic.buf.length; i++) sum += mic.buf[i] * mic.buf[i];
+  const rms = Math.sqrt(sum / mic.buf.length);
+  return 20 * Math.log10(rms + 1e-9);
+}
+function calibrate() {
+  const samples = [];
+  const id = setInterval(() => {
+    samples.push(rawDb());
+    if (samples.length >= 25) {
+      clearInterval(id);
+      samples.sort((a, b) => a - b);
+      const med = samples[Math.floor(samples.length / 2)];
+      mic.floor = Math.min(-25, Math.max(-75, med + 6));
+    }
+  }, 30);
+}
+function readMic() {
+  if (!mic.ok) return 0;
+  const db = rawDb();
+  const top = -4 - Number(sensIn.value) * 1.2;            // この dB で 100
+  const floor = Math.min(mic.floor, top - 12);
+  let lv = (db - floor) / (top - floor);
+  lv = Math.max(0, lv) * 100;                               // 上限なし（100 は目安）
+  mic.raw = lv;
+  // 立ち上がりは速く、減衰はゆっくり
+  mic.level += (lv - mic.level) * (lv > mic.level ? 0.6 : 0.18);
+  return mic.level;
+}
+
+// ---------- 画面切替 ----------
+function show(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.toggle('on', s.id === id));
+  if (id === 'game') resize();
+}
+function titleErr(t) { $('#titleErr').textContent = t; }
+
+// ---------- 開始ボタン ----------
+async function needMic() {
+  titleErr('');
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    titleErr('このブラウザではマイクが使えません（https で開いてください）');
+    return false;
+  }
+  const ok = await initMic();
+  if (!ok) titleErr('マイクが使えません。ブラウザのマイク許可を確認してください。');
+  return ok;
+}
+
+$('#btnCreate').onclick = async () => {
+  if (!await needMic()) return;
+  role = 'host';
+  S.names[0] = myName();
+  try { createRoom(0); } catch (e) { titleErr(e.message); role = null; }
+};
+$('#btnJoin').onclick = async () => {
+  const code = $('#joinCode').value.replace(/\D/g, '');
+  if (code.length !== 4) { titleErr('4桁の部屋番号を入れてください'); return; }
+  if (!await needMic()) return;
+  role = 'guest';
+  try { joinRoom(code); } catch (e) { titleErr(e.message); role = null; }
+};
+$('#btnPractice').onclick = async () => {
+  if (!await needMic()) return;
+  role = null;
+  startPractice();
+};
+
+// ---------- オンライン ----------
+function newPeer(id) {
+  if (typeof Peer === 'undefined') throw new Error('PeerJS が読み込めません（ネット接続を確認してください）');
+  // PeerJS の無料シグナリングサーバ経由で WebRTC 直接接続
+  return id ? new Peer(id, {debug: 1}) : new Peer({debug: 1});
+}
+function createRoom(tries) {
+  const code = String(Math.floor(1000 + Math.random() * 9000));
+  peer = newPeer(PREFIX + code);
+  peer.on('open', () => {
+    $('#roomCode').textContent = code;
+    $('#waitStatus').textContent = '相手の入場を待っています…';
+    show('wait');
+  });
+  peer.on('error', e => {
+    if (e.type === 'unavailable-id' && tries < 5) { peer.destroy(); createRoom(tries + 1); return; }
+    console.warn(e);
+    if (!conn) { titleErr('通信エラー：' + e.type); cleanup(); show('title'); }
+  });
+  peer.on('connection', c => {
+    if (conn && conn.open) { c.on('open', () => { c.send({t: 'full'}); setTimeout(() => c.close(), 300); }); return; }
+    setupConn(c);
+  });
+}
+function joinRoom(code) {
+  peer = newPeer();
+  titleErr('接続中…');
+  const failTimer = setTimeout(() => { if (!conn || !conn.open) { titleErr('つながりませんでした。部屋番号を確認してください。'); cleanup(); } }, 12000);
+  peer.on('open', () => {
+    const c = peer.connect(PREFIX + code, {reliable: true, serialization: 'json'});
+    setupConn(c, () => clearTimeout(failTimer));
+  });
+  peer.on('error', e => {
+    console.warn(e);
+    clearTimeout(failTimer);
+    titleErr(e.type === 'peer-unavailable' ? 'その部屋は見つかりません' : '通信エラー：' + e.type);
+    cleanup();
+  });
+}
+function setupConn(c, onOpen) {
+  conn = c;
+  c.on('open', () => {
+    onOpen && onOpen();
+    titleErr('');
+    send({t: 'hello', name: role === 'host' ? S.names[0] : myName()});
+    if (role === 'host') { resetMatch(true); startGame(); }
+  });
+  c.on('data', onData);
+  c.on('close', () => { if (conn === c) disconnected(); });
+  c.on('error', e => console.warn(e));
+}
+function send(o) { if (conn && conn.open) { try { conn.send(o); } catch(e) {} } }
+
+function onData(d) {
+  if (!d || typeof d !== 'object') return;
+  if (role === 'host') {
+    if (d.t === 'hello') { S.names[1] = String(d.name || '西ノ海').slice(0, 8); }
+    else if (d.t === 'vol') { oppVol = clampN(d.v, 0, 9999); oppVolAt = performance.now(); }
+    else if (d.t === 'ready') { S.ready[1] = !!d.on; maybeStart(); }
+  } else if (role === 'guest') {
+    if (d.t === 'state') {
+      const prevPhase = S.phase;
+      S.phase = d.phase; S.pos = clampN(d.pos, -1.5, 1.5); S.v = [clampN(d.v[0],0,9999), clampN(d.v[1],0,9999)];
+      S.ready = [!!d.ready[0], !!d.ready[1]]; S.names = [String(d.names[0]).slice(0,8), String(d.names[1]).slice(0,8)];
+      S.score = [d.score[0]|0, d.score[1]|0]; S.t0 = performance.now() - (d.el || 0);
+      S.winner = d.winner|0; S.reason = String(d.reason || '');
+      if (prevPhase !== S.phase) onPhase(prevPhase);
+      if (!$('#game').classList.contains('on')) startGame();
+    } else if (d.t === 'full') {
+      titleErr('その部屋は満員です'); cleanup();
+    }
+  }
+}
+function clampN(x, a, b) { x = Number(x); return isFinite(x) ? Math.max(a, Math.min(b, x)) : 0; }
+
+function disconnected() {
+  if (role === 'host' || role === 'guest') {
+    stopLoop();
+    cleanup();
+    titleErr('相手との接続が切れました');
+    show('title');
+  }
+}
+function cleanup() {
+  stopLoop();
+  if (conn) { try { conn.close(); } catch(e) {} }
+  if (peer) { try { peer.destroy(); } catch(e) {} }
+  conn = null; peer = null;
+}
+
+$('#btnCancel').onclick = () => { cleanup(); role = null; show('title'); };
+$('#btnShare').onclick = async () => {
+  const url = location.origin + location.pathname + '?room=' + $('#roomCode').textContent;
+  try {
+    if (navigator.share && /Android|iPhone|iPad/.test(navigator.userAgent)) await navigator.share({title: 'ボイス相撲', text: '大声で勝負！', url});
+    else { await navigator.clipboard.writeText(url); $('#btnShare').textContent = 'コピーしました'; }
+  } catch(e) { $('#btnShare').textContent = url; }
+};
+$('#btnLeave').onclick = () => { cleanup(); role = null; show('title'); };
+
+// ?room=1234 で開かれたら番号を入れておく
+(() => {
+  const r = new URLSearchParams(location.search).get('room');
+  if (r && /^\d{4}$/.test(r)) { $('#joinCode').value = r; titleErr('しこ名を入れて「入る」を押してください'); }
+})();
+
+// ---------- 試合ロジック（ホスト） ----------
+function resetMatch(keepNames) {
+  S.phase = 'wait'; S.pos = 0; S.vel = 0; S.v = [0, 0]; S.ready = [false, false];
+  S.score = [0, 0]; S.winner = -1; S.reason = '';
+  if (!keepNames) S.names = ['', ''];
+  viewPos = 0;
+}
+function maybeStart() {
+  if ((S.phase === 'wait' || S.phase === 'end') && S.ready[0] && S.ready[1]) {
+    const prev = S.phase;
+    S.phase = 'count'; S.t0 = performance.now(); S.pos = 0; S.vel = 0; S.winner = -1; S.reason = '';
+    onPhase(prev);
+  }
+}
+function hostStep() {
+  const now = performance.now();
+  S.v[0] = readMic();
+  S.v[1] = (now - oppVolAt < 1000) ? oppVol : 0;
+
+  const el = (now - S.t0) / 1000;
+  if (S.phase === 'count' && el >= 3) {
+    S.phase = 'fight'; S.t0 = now; onPhase('count');
+  } else if (S.phase === 'fight') {
+    const dt = TICK / 1000;
+    const pw = S.v;
+    const diff = (pw[0] - pw[1]) / 100;              // 正なら東が押している
+    const both = Math.min(S.v[0], S.v[1]) / 100;      // がっぷり四つ度
+    S.vel += diff * 2.4 * dt;
+    S.vel *= 0.90 - both * 0.04;                      // 両者大声だと拮抗しやすい
+    S.pos += S.vel * dt;                              // 圧倒すれば約2秒で寄り切り
+    let w = -1, reason = '';
+    if (S.pos >= 1) { w = 0; reason = '押し出し'; }
+    else if (S.pos <= -1) { w = 1; reason = '押し出し'; }
+    else if ((now - S.t0) / 1000 >= BOUT_TIME) {
+      if (Math.abs(S.pos) < 0.04) { w = 2; reason = '引き分け'; }
+      else { w = S.pos > 0 ? 0 : 1; reason = '時間切れ・優勢'; }
+    }
+    if (w >= 0) {
+      S.phase = 'end'; S.winner = w; S.reason = reason; S.t0 = now;
+      if (w < 2) S.score[w]++;
+      S.ready = [false, false];
+      S.pos = Math.max(-1.25, Math.min(1.25, S.pos));
+      onPhase('fight');
+    }
+  }
+  if (role === 'host') {
+    send({t: 'state', phase: S.phase, pos: +S.pos.toFixed(4), v: [Math.round(S.v[0]), Math.round(S.v[1])],
+      ready: S.ready, names: S.names, score: S.score, el: Math.round(now - S.t0), winner: S.winner, reason: S.reason});
+  }
+}
+function guestStep() {
+  send({t: 'vol', v: Math.round(readMic())});
+}
+
+// ---------- ループ ----------
+function startGame() {
+  show('game');
+  stopLoop();
+  onPhase(null);
+  loopTimer = setInterval(() => {
+    if (role === 'guest') guestStep(); else hostStep();
+  }, TICK);
+  requestAnimationFrame(frame);
+}
+function stopLoop() { if (loopTimer) clearInterval(loopTimer); loopTimer = null; }
+
+$('#btnReady').onclick = () => {
+  const i = me();
+  const on = !S.ready[i];
+  if (role === 'guest') { S.ready[1] = on; send({t: 'ready', on}); }
+  else { S.ready[0] = on; maybeStart(); }
+  updateUI();
+};
+$('#btnCalib').onclick = () => { calibrate(); $('#btnCalib').textContent = '測定しました'; setTimeout(() => $('#btnCalib').textContent = '周りの雑音を測り直す（静かにして押す）', 1500); };
+
+// ---------- メーター（枠=100。大きいほどバーが枠の外まで伸びる） ----------
+function setMeter(bar, v) {
+  bar.style.width = v + '%';
+}
+
+// ---------- 稽古場 ----------
+const THR = 30;                      // これ以上で「声が出ている」
+const P = {timer: null, hist: [], cur: null, quietAt: 0, best: {peak: 0, dur: 0}};
+try { const b = JSON.parse(localStorage.getItem('vs_best') || 'null'); if (b) P.best = {peak: +b.peak || 0, dur: +b.dur || 0}; } catch(e) {}
+const sensP = $('#sensP');
+sensP.value = sensIn.value;
+sensP.addEventListener('input', () => { sensIn.value = sensP.value; sensIn.dispatchEvent(new Event('input')); });
+sensIn.addEventListener('input', () => { sensP.value = sensIn.value; });
+$('#btnCalibP').onclick = () => { calibrate(); $('#btnCalibP').textContent = '測定しました'; setTimeout(() => $('#btnCalibP').textContent = '周りの雑音を測り直す（静かにして押す）', 1500); };
+
+function startPractice() {
+  show('practice');
+  P.hist = []; P.cur = null;
+  renderBest(false, false);
+  clearInterval(P.timer);
+  P.timer = setInterval(practiceStep, TICK);
+  requestAnimationFrame(practiceFrame);
+}
+function stopPractice() { clearInterval(P.timer); P.timer = null; }
+$('#pBack').onclick = () => { stopPractice(); show('title'); };
+$('#pReset').onclick = () => {
+  P.best = {peak: 0, dur: 0};
+  try { localStorage.removeItem('vs_best'); } catch(e) {}
+  renderBest(false, false);
+};
+
+function practiceStep() {
+  const now = performance.now();
+  readMic();
+  const v = mic.raw;                              // 長さは平滑化前の値で測る
+  P.hist.push({t: now, v});
+  while (P.hist.length && now - P.hist[0].t > 10000) P.hist.shift();
+  if (v >= THR) {
+    if (!P.cur) P.cur = {start: now, peak: 0, sum: 0, n: 0};
+    P.cur.peak = Math.max(P.cur.peak, v); P.cur.sum += v; P.cur.n++;
+    P.cur.end = now; P.quietAt = 0;
+  } else if (P.cur) {
+    if (!P.quietAt) P.quietAt = now;
+    if (now - P.quietAt > 250) finishShout();      // 0.25秒静かになったら一声おわり
+  }
+}
+function finishShout() {
+  const c = P.cur; P.cur = null; P.quietAt = 0;
+  const dur = (c.end - c.start) / 1000;
+  if (dur < 0.15) return;                         // 短すぎる音（物音）は無視
+  const peak = Math.round(c.peak), avg = Math.round(c.sum / c.n);
+  $('#pLastPeak').textContent = peak;
+  $('#pLastAvg').textContent = avg;
+  $('#pLastDur').textContent = dur.toFixed(1) + '秒';
+  const newPeak = peak > P.best.peak, newDur = dur > P.best.dur;
+  if (newPeak) P.best.peak = peak;
+  if (newDur) P.best.dur = dur;
+  if (newPeak || newDur) { try { localStorage.setItem('vs_best', JSON.stringify(P.best)); } catch(e) {} }
+  renderBest(newPeak, newDur);
+}
+function renderBest(newPeak, newDur) {
+  const bp = $('#pBestPeak'), bd = $('#pBestDur');
+  bp.textContent = P.best.peak ? P.best.peak + (newPeak ? ' 更新!' : '') : '-';
+  bd.textContent = P.best.dur ? P.best.dur.toFixed(1) + '秒' + (newDur ? ' 更新!' : '') : '-';
+  bp.classList.toggle('new', newPeak); bd.classList.toggle('new', newDur);
+}
+
+const pg = $('#pGraph'), pgc = pg.getContext('2d');
+function practiceFrame() {
+  if (!$('#practice').classList.contains('on')) return;
+  const v = mic.level;
+  $('#pLevel').textContent = Math.round(v);
+  setMeter($('#pMeter'), v);
+  const now = performance.now();
+  $('#pCurDur').textContent = P.cur ? ((now - P.cur.start) / 1000).toFixed(1) : '0.0';
+  $('#pCurPeak').textContent = P.cur ? Math.round(P.cur.peak) : '0';
+
+  // グラフ（直近10秒）
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const w = pg.clientWidth, h = pg.clientHeight;
+  if (pg.width !== Math.round(w * dpr)) { pg.width = Math.round(w * dpr); pg.height = Math.round(h * dpr); }
+  const c = pgc;
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  c.clearRect(0, 0, w, h);
+  const pad = 6, gh = h - pad * 2;
+  let top = 100;                                  // 大きい声が来たら目盛りを広げる
+  P.hist.forEach(p => { if (p.v > top) top = p.v; });
+  top = Math.ceil(top * 1.1 / 50) * 50;
+  const yOf = val => pad + gh * (1 - val / top);
+  const xOf = t => w - (now - t) / 10000 * w;
+  // 目盛り
+  c.fillStyle = '#6d5a48'; c.font = '10px sans-serif';
+  for (let s = 0; s <= 10; s += 2) { const x = w - s / 10 * w; c.fillRect(x, h - 4, 1, 4); }
+  c.fillText('10秒前', 4, h - 6); c.textAlign = 'right'; c.fillText('今', w - 4, h - 6); c.textAlign = 'left';
+  // 声が出ている区間
+  c.fillStyle = 'rgba(224,166,58,.15)';
+  let segStart = null;
+  P.hist.forEach((p, k) => {
+    const on = p.v >= THR;
+    if (on && segStart === null) segStart = p.t;
+    if ((!on || k === P.hist.length - 1) && segStart !== null) { c.fillRect(xOf(segStart), 0, xOf(p.t) - xOf(segStart), h); segStart = null; }
+  });
+  // しきい線
+  c.strokeStyle = '#ffe066'; c.setLineDash([4, 4]); c.lineWidth = 1;
+  c.beginPath(); c.moveTo(0, yOf(THR)); c.lineTo(w, yOf(THR)); c.stroke(); c.setLineDash([]);
+  // 波形
+  c.strokeStyle = '#e0a63a'; c.lineWidth = 2; c.beginPath();
+  P.hist.forEach((p, k) => { const x = xOf(p.t), y = yOf(p.v); k ? c.lineTo(x, y) : c.moveTo(x, y); });
+  c.stroke();
+  requestAnimationFrame(practiceFrame);
+}
+
+// ---------- 演出 ----------
+const msgEl = $('#msg');
+let msgKey = '';
+function setMsg(text, color, key, sub) {
+  if (key === msgKey) return;
+  msgKey = key;
+  msgEl.textContent = '';
+  const d = document.createElement('div');
+  d.textContent = text;
+  if (sub) {
+    const s = document.createElement('div');
+    s.style.cssText = 'font-size:.4em;color:var(--ink)';
+    s.textContent = sub;
+    d.appendChild(s);
+  }
+  msgEl.appendChild(d);
+  msgEl.style.color = color || 'var(--ink)';
+  msgEl.classList.remove('pop'); void msgEl.offsetWidth; msgEl.classList.add('pop');
+}
+function onPhase() {
+  if (S.phase === 'count') viewPos = 0;
+  if (S.phase === 'fight' && navigator.vibrate) { try { navigator.vibrate(80); } catch(e) {} }
+}
+
+function updateUI() {
+  const i = me();
+  const youTag = '<span class="you">あなた</span>';
+  const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const nW = esc(S.names[0] || '…') , nE = esc(S.names[1] || '…');
+  const hW = i === 0 ? nW + youTag : nW, hE = i === 1 ? youTag + nE : nE;
+  if ($('#nmW').innerHTML !== hW) $('#nmW').innerHTML = hW;
+  if ($('#nmE').innerHTML !== hE) $('#nmE').innerHTML = hE;
+  $('#score').textContent = S.score[0] + '-' + S.score[1];
+  setMeter($('#mW'), S.v[0]);
+  setMeter($('#mE'), S.v[1]);
+  setMeter($('#mMe'), mic.level);
+  const btn = $('#btnReady');
+  const st = $('#status');
+  const el = (performance.now() - S.t0) / 1000;
+  if (S.phase === 'wait' || S.phase === 'end') {
+    btn.style.display = '';
+    btn.textContent = S.ready[i] ? '準備OK（取り消す）' : (S.phase === 'end' ? 'もう一番！' : '準備OK');
+    btn.classList.toggle('ghost', S.ready[i]);
+    const other = S.ready[1 - i];
+    st.textContent = S.ready[i] ? (other ? '' : '相手の準備を待っています…') : (other ? '相手は準備OK。準備OKを押してください' : '両者が準備OKで立ち合い');
+    if (S.phase === 'wait') setMsg('', '', 'wait');
+    else {
+      const w = S.winner;
+      if (w === 2) setMsg('引き分け', 'var(--accent)', 'end2');
+      else setMsg(w === i ? '勝ち！' : '負け…', w === i ? 'var(--accent)' : 'var(--sub)', 'end' + w + S.score.join(),
+        S.names[w] + '　' + S.reason);
+    }
+  } else if (S.phase === 'count') {
+    btn.style.display = 'none';
+    st.textContent = '息を吸って…';
+    if (el < 1.5) setMsg('見合って…', 'var(--ink)', 'c1');
+    else setMsg('手をついて…', 'var(--ink)', 'c2');
+  } else if (S.phase === 'fight') {
+    btn.style.display = 'none';
+    const left = Math.max(0, BOUT_TIME - el);
+    st.textContent = '叫べ！ 残り ' + left.toFixed(0) + ' 秒';
+    if (el < 1.2) setMsg('はっけよい！', 'var(--accent)', 'f1');
+    else if (el < 2.2) setMsg('のこった！', 'var(--accent)', 'f2');
+    else setMsg('', '', 'f3');
+  }
+}
+
+// ---------- 描画 ----------
+const cv = $('#cv'), cx2 = cv.getContext('2d');
+let W = 0, H = 0, DPR = 1;
+function resize() {
+  DPR = Math.min(2, window.devicePixelRatio || 1);
+  const r = cv.getBoundingClientRect();
+  W = r.width; H = r.height;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+}
+window.addEventListener('resize', resize);
+
+function frame(ts) {
+  if (!$('#game').classList.contains('on')) return;
+  viewPos += (S.pos - viewPos) * (role === 'guest' ? 0.35 : 0.6);
+  draw(ts / 1000);
+  updateUI();
+  requestAnimationFrame(frame);
+}
+
+function draw(t) {
+  const c = cx2;
+  c.setTransform(DPR, 0, 0, DPR, 0, 0);
+  // 背景（館内）
+  const g = c.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#2b1d14'); g.addColorStop(1, '#120c08');
+  c.fillStyle = g; c.fillRect(0, 0, W, H);
+  // 吊り屋根
+  c.fillStyle = '#3d2a1c';
+  c.beginPath(); c.moveTo(W * .1, H * .14); c.lineTo(W * .9, H * .14); c.lineTo(W * .82, H * .05); c.lineTo(W * .18, H * .05); c.fill();
+  const tassels = ['#2f5f3a', '#c73a2b', '#e8e2d2', '#1f2a44'];
+  [[.13, 0], [.87, 1]].forEach(([x], k) => { c.fillStyle = tassels[k ? 1 : 0]; c.fillRect(W * x - 4, H * .14, 8, H * .1); });
+
+  // 土俵
+  const ground = H * .78;
+  const cx = W / 2, R = W * .36;
+  c.fillStyle = '#b98a55';
+  c.beginPath();
+  c.moveTo(cx - R - W * .08, H); c.lineTo(cx - R - W * .03, ground); c.lineTo(cx + R + W * .03, ground); c.lineTo(cx + R + W * .08, H); c.fill();
+  c.fillStyle = '#d4a86d'; c.fillRect(cx - R - W * .03, ground - 3, 2 * R + W * .06, 6);
+  // 俵
+  c.fillStyle = '#8c6a38';
+  [-1, 1].forEach(s => { c.beginPath(); c.ellipse(cx + s * R, ground - 3, 10, 6, 0, 0, Math.PI * 2); c.fill(); });
+  // 仕切り線
+  c.fillStyle = '#f2ebe0';
+  c.fillRect(cx - W * .06, ground - 1, 4, 3); c.fillRect(cx + W * .06 - 4, ground - 1, 4, 3);
+
+  // 力士
+  const bodyR = Math.min(W * .085, H * .17);
+  const p = viewPos;
+  const contact = cx + p * R;
+  const fighting = S.phase === 'fight';
+  const crouch = S.phase === 'count';
+  const lean0 = fighting ? .15 + Math.min(1, S.v[0] / 100) * .35 : (crouch ? .5 : 0);
+  const lean1 = fighting ? .15 + Math.min(1, S.v[1] / 100) * .35 : (crouch ? .5 : 0);
+  let x0 = contact - bodyR * 1.15, x1 = contact + bodyR * 1.15;
+  if (S.phase === 'wait' || crouch) { x0 = cx - W * .11; x1 = cx + W * .11; }
+  drawRikishi(c, x0, ground, bodyR, 1, lean0, S.v[0], t, '#d2452f', S.phase === 'end' && S.winner === 1);
+  drawRikishi(c, x1, ground, bodyR, -1, lean1, S.v[1], t, '#3a5fcd', S.phase === 'end' && S.winner === 0);
+
+  // 声の衝撃波
+  if (fighting) {
+    [[x0, 0, 1], [x1, 1, -1]].forEach(([x, i, dir]) => {
+      const v = Math.min(1, S.v[i] / 100);
+      if (v < .2) return;
+      c.strokeStyle = i ? 'rgba(130,170,255,' + (v * .7) + ')' : 'rgba(255,150,110,' + (v * .7) + ')';
+      c.lineWidth = 2 + v * 3;
+      for (let k = 0; k < 3; k++) {
+        const ph = ((t * 2.5 + k / 3) % 1);
+        const rr = bodyR * (.6 + ph * 1.2);
+        c.globalAlpha = 1 - ph;
+        c.beginPath(); c.arc(x + dir * bodyR * .4, ground - bodyR * 2.3, rr, dir > 0 ? -0.7 : Math.PI - 0.7, dir > 0 ? 0.7 : Math.PI + 0.7); c.stroke();
+      }
+      c.globalAlpha = 1;
+    });
+  }
+}
+
+function drawRikishi(c, x, ground, r, dir, lean, vol, t, color, fallen) {
+  const shake = vol > 60 ? (Math.random() - .5) * (Math.min(vol, 160) - 60) * .08 : 0;
+  c.save();
+  c.translate(x + shake, ground);
+  if (fallen) c.rotate(-dir * 0.9);
+  c.rotate(dir * lean * .6);
+  // 脚
+  c.fillStyle = '#e9b98f';
+  c.strokeStyle = '#7a4f33'; c.lineWidth = 2;
+  c.beginPath(); c.ellipse(-r * .45, -r * .35, r * .3, r * .38, 0, 0, Math.PI * 2); c.fill(); c.stroke();
+  c.beginPath(); c.ellipse(r * .45, -r * .35, r * .3, r * .38, 0, 0, Math.PI * 2); c.fill(); c.stroke();
+  // 胴
+  c.beginPath(); c.ellipse(0, -r * 1.25, r, r * .95, 0, 0, Math.PI * 2); c.fill(); c.stroke();
+  // まわし
+  c.fillStyle = color;
+  c.fillRect(-r * .98, -r * .78, r * 1.96, r * .32);
+  c.beginPath(); c.moveTo(-r * .2, -r * .5); c.lineTo(r * .2, -r * .5); c.lineTo(r * .1, -r * .1); c.lineTo(-r * .1, -r * .1); c.fill();
+  // 腕（相手へ突き出す）
+  c.fillStyle = '#e9b98f';
+  c.save(); c.translate(dir * r * .6, -r * 1.45); c.rotate(dir * (-.2 - vol / 300));
+  c.beginPath(); c.ellipse(dir * r * .45, 0, r * .55, r * .2, 0, 0, Math.PI * 2); c.fill(); c.stroke();
+  c.restore();
+  // 頭
+  const hx = dir * r * .35, hy = -r * 2.35;
+  c.beginPath(); c.arc(hx, hy, r * .45, 0, Math.PI * 2); c.fill(); c.stroke();
+  // 髷
+  c.fillStyle = '#1a1210';
+  c.beginPath(); c.arc(hx - dir * r * .05, hy - r * .22, r * .4, Math.PI * 1.05, Math.PI * 1.95); c.fill();
+  c.beginPath(); c.ellipse(hx - dir * r * .1, hy - r * .55, r * .22, r * .1, 0, 0, Math.PI * 2); c.fill();
+  // 目
+  c.fillStyle = '#1a1210';
+  c.beginPath(); c.arc(hx + dir * r * .2, hy, r * .05, 0, Math.PI * 2); c.fill();
+  // 口（声の大きさで開く）
+  const open = Math.max(.03, Math.min(1.3, vol / 100)) * r * .28;
+  c.fillStyle = '#5a1a14';
+  c.beginPath(); c.ellipse(hx + dir * r * .28, hy + r * .2, r * .1, open, 0, 0, Math.PI * 2); c.fill();
+  c.restore();
+}
+
+})();
+</script>
+</body>
+</html>
