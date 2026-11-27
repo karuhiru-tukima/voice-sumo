@@ -41,6 +41,16 @@ input[type=text],input[type=tel]{width:100%;padding:12px;border-radius:10px;bord
 .sec{font-size:13px;color:var(--sub);border-top:1px solid var(--line);padding-top:10px;margin-top:2px}
 .myrate{text-align:center;font-size:14px;color:var(--sub);min-height:1.2em}
 .myrate b{color:var(--accent);font-size:22px;font-family:ui-monospace,Consolas,monospace;margin:0 4px}
+#title{position:relative}
+.gear{position:absolute;top:max(12px,env(safe-area-inset-top));right:12px;width:44px;height:44px;border-radius:50%;
+  border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer;display:flex;align-items:center;justify-content:center}
+.gear svg{width:22px;height:22px}
+.acct{display:flex;flex-direction:column;align-items:center;gap:6px;font-size:13px;color:var(--sub);text-align:center}
+.acct:empty{display:none}
+.gbtn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:10px;border-radius:10px;border:1px solid #dadce0;
+  background:#fff;color:#3c4043;font-family:system-ui,sans-serif;font-size:15px;font-weight:600;cursor:pointer}
+.gbtn svg{width:18px;height:18px}
+.linkbtn{background:none;border:none;color:var(--sub);text-decoration:underline;font-size:12px;cursor:pointer;padding:2px}
 .code{font-size:56px;letter-spacing:.25em;text-align:center;font-family:ui-monospace,Consolas,monospace;color:var(--accent)}
 .hint{font-size:13px;color:var(--sub);text-align:center;line-height:1.6}
 .err{color:#ff8a7a;font-size:14px;text-align:center;min-height:1em}
@@ -118,6 +128,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 
 <!-- タイトル -->
 <section id="title" class="screen on">
+  <button class="gear" id="btnSettings" aria-label="設定"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
   <h1><small>大声で押し出せ</small>ボイス相撲</h1>
   <div class="card">
     <label for="name">プレイヤー名</label>
@@ -125,7 +136,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div class="myrate" id="myRate"></div>
     <button class="btn" id="btnOnline">オンライン対戦<small>知らない人と・レート変動あり</small></button>
     <div class="sec">友達と対戦（レート変動なし）</div>
-    <button class="btn ghost" id="btnCreate">部屋を作る</button>
+    <button class="btn" id="btnCreate">部屋を作る</button>
     <div class="row">
       <input id="joinCode" type="tel" inputmode="numeric" maxlength="4" placeholder="部屋番号">
       <button class="btn ghost" id="btnJoin">入る</button>
@@ -138,6 +149,17 @@ input[type=range]{width:100%;accent-color:var(--accent)}
     <div class="err" id="titleErr"></div>
   </div>
   <p class="hint">声が大きい方が押す。土俵の外に出したら勝ち。<br>相手より200以上大きい声を出すと<b>投げ技</b>で一発勝ち。</p>
+</section>
+
+<!-- 設定 -->
+<section id="settings" class="screen">
+  <h2>設定</h2>
+  <div class="card">
+    <div class="lab">アカウント</div>
+    <div class="acct" id="acct"><div>オンラインに接続中…</div></div>
+    <div class="err" id="settingsMsg"></div>
+  </div>
+  <button class="btn ghost" id="btnSettingsBack" style="width:100%;max-width:380px">戻る</button>
 </section>
 
 <!-- 友達対戦の待機 -->
@@ -257,7 +279,7 @@ const BOUT_TIME = 30;          // 秒（時間切れは前に出ている方の�
 const THROW_DIFF = 200;        // この差以上で投げ技
 const THROW_TICKS = 3;         // 差が約0.1秒続いたら決まる（一瞬の雑音では決まらない）
 const THROWS = ['上手投げ', '下手投げ', '小手投げ', 'すくい投げ'];
-const START_RATING = 1500, K = 32;
+const START_RATING = 0, K = 32;   // レートは 0 から始まり、0 より下がらない
 
 // ---------- 状態 ----------
 let role = null;               // 'host' | 'guest'
@@ -292,27 +314,143 @@ function myName() {
 }
 
 // ---------- Firebase（レート・ランキング・相手さがし） ----------
-const FB = {ok: false, db: null, uid: null, me: null, err: ''};
+// 記録（レート・戦績・稽古場の自己ベスト）はすべて Firestore の players/{uid} に保存する。
+// サイトのファイルやブラウザのデータを消しても Firebase 側の記録は消えない。
+// Google ログインすると uid が Google アカウントに結びつくので、別の端末・ブラウザでも同じ記録に戻れる。
+const FB = {ok: false, db: null, uid: null, user: null, me: null, err: ''};
 async function fbInit() {
   const cfg = window.FIREBASE_CONFIG;
   if (!cfg || !cfg.apiKey || typeof firebase === 'undefined') { FB.err = 'notset'; renderMyRating(); return; }
   try {
     if (!firebase.apps.length) firebase.initializeApp(cfg);
-    const cred = await firebase.auth().signInAnonymously();      // 端末ごとに匿名IDが1つ（ブラウザに保存される）
-    FB.uid = cred.user.uid;
+    const auth = firebase.auth();
     FB.db = firebase.firestore();
-    const snap = await FB.db.collection('players').doc(FB.uid).get();
-    const d = snap.exists ? snap.data() : {};
-    FB.me = {name: d.name || '', rating: Number(d.rating) || START_RATING,
-             wins: d.wins | 0, losses: d.losses | 0, draws: d.draws | 0};
-    FB.ok = true;
+    // 前回のログイン状態（Google か匿名）を待ってから、無ければ匿名で入る
+    let user = await new Promise(res => { const un = auth.onAuthStateChanged(u => { un(); res(u); }); });
+    if (!user) user = (await auth.signInAnonymously()).user;
+    await loadPlayer(user);
   } catch (e) {
     console.warn(e);
     FB.err = e.code || e.message || 'error';
   }
   renderMyRating();
 }
+async function loadPlayer(user) {
+  FB.user = user; FB.uid = user.uid;
+  const snap = await FB.db.collection('players').doc(FB.uid).get();
+  const d = snap.exists ? snap.data() : {};
+  FB.me = {name: d.name || '', rating: Number(d.rating) || START_RATING,
+           wins: d.wins | 0, losses: d.losses | 0, draws: d.draws | 0,
+           bestPeak: Number(d.bestPeak) || 0, bestDur: Number(d.bestDur) || 0};
+  FB.ok = true;
+  if (d.name && !nameIn.value.trim()) nameIn.value = d.name;
+  // 稽古場の自己ベスト：端末とアカウントの良い方を残す
+  const cloudBetter = FB.me.bestPeak > P.best.peak || FB.me.bestDur > P.best.dur;
+  const localBetter = P.best.peak > FB.me.bestPeak || P.best.dur > FB.me.bestDur;
+  P.best = {peak: Math.max(P.best.peak, FB.me.bestPeak), dur: Math.max(P.best.dur, FB.me.bestDur)};
+  FB.me.bestPeak = P.best.peak; FB.me.bestDur = P.best.dur;
+  if (cloudBetter) { try { localStorage.setItem('vs_best', JSON.stringify(P.best)); } catch(e) {} }
+  if (localBetter && snap.exists) savePlayer();
+  renderBest(false, false);
+  renderMyRating();
+}
+
+// ---------- Google ログイン ----------
+const G_ICON = '<svg viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.6l6.7-6.7C35.6 2.4 30.2 0 24 0 14.6 0 6.6 5.4 2.6 13.2l7.8 6.1C12.3 13.6 17.6 9.5 24 9.5z"/><path fill="#4285F4" d="M46.1 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.4c-.5 2.9-2.2 5.3-4.6 6.9l7.5 5.8c4.4-4 6.8-10 6.8-17.2z"/><path fill="#FBBC05" d="M10.4 28.7c-.5-1.4-.8-3-.8-4.7s.3-3.2.8-4.7l-7.8-6.1C.9 16.5 0 20.1 0 24s.9 7.5 2.6 10.8l7.8-6.1z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.8-5.8l-7.5-5.8c-2.1 1.4-4.8 2.3-8.3 2.3-6.4 0-11.7-4.1-13.6-9.8l-7.8 6.1C6.6 42.6 14.6 48 24 48z"/></svg>';
+function setMsgS(t, isErr) {
+  const el = $('#settingsMsg');
+  el.textContent = t;
+  el.style.color = isErr ? '' : 'var(--accent)';
+}
+$('#btnSettings').onclick = () => { setMsgS(''); renderAccount(); show('settings'); };
+$('#btnSettingsBack').onclick = () => show('title');
+function renderAccount() {
+  const el = $('#acct');
+  el.textContent = '';
+  if (!FB.ok) {
+    const p = document.createElement('div');
+    p.textContent = FB.err === 'notset' ? 'Firebase未設定のためログインできません'
+      : FB.err ? 'オンラインに接続できません（' + FB.err + '）' : 'オンラインに接続中…';
+    el.append(p);
+    return;
+  }
+  if (FB.user && !FB.user.isAnonymous) {
+    const p = document.createElement('div');
+    p.textContent = 'Googleでログイン中' + (FB.user.displayName ? '（' + FB.user.displayName + '）' : '') + '・記録はアカウントに保存';
+    const out = document.createElement('button');
+    out.className = 'linkbtn'; out.textContent = 'ログアウト'; out.onclick = googleLogout;
+    el.append(p, out);
+  } else {
+    const b = document.createElement('button');
+    b.className = 'gbtn'; b.innerHTML = G_ICON + '<span>Googleでログイン</span>'; b.onclick = googleLogin;
+    const p = document.createElement('div');
+    p.textContent = 'ログインすると、ブラウザのデータを消しても別の端末でも記録が残ります';
+    el.append(b, p);
+  }
+}
+function loginErrMsg(e) {
+  const c = (e && e.code) || '';
+  if (c === 'auth/popup-closed-by-user' || c === 'auth/cancelled-popup-request' || c === 'auth/user-cancelled') return '';
+  if (c === 'auth/unauthorized-domain') return 'このサイトのアドレスがFirebaseの「承認済みドメイン」に入っていません';
+  if (c === 'auth/operation-not-allowed') return 'FirebaseでGoogleログインが有効になっていません';
+  if (c === 'auth/popup-blocked') return 'ポップアップがブロックされました。許可してからもう一度押してください';
+  if (c === 'auth/web-storage-unsupported' || c === 'auth/operation-not-supported-in-this-environment')
+    return 'このブラウザではログインできません（LINEなどのアプリ内ブラウザなら、SafariやChromeで開き直してください）';
+  return 'ログインできませんでした（' + (c || (e && e.message) || 'error') + '）';
+}
+async function googleLogin() {
+  if (!FB.ok) return;
+  setMsgS('');
+  const auth = firebase.auth();
+  const provider = new firebase.auth.GoogleAuthProvider();
+  provider.setCustomParameters({prompt: 'select_account'});
+  try {
+    const cur = auth.currentUser;
+    if (cur && cur.isAnonymous) {
+      try {
+        // 今の匿名の記録をそのまま Google アカウントに引き継ぐ（uid は変わらない）
+        const r = await cur.linkWithPopup(provider);
+        await loadPlayer(r.user);
+        await savePlayer();
+        setMsgS('Googleアカウントに記録を引き継ぎました');
+      } catch (e) {
+        if (e.code !== 'auth/credential-already-in-use') throw e;
+        // そのGoogleアカウントは別の端末などで使用済み → そちらの記録に切り替える
+        const GP = firebase.auth.GoogleAuthProvider;
+        const cred = e.credential || (GP.credentialFromError && GP.credentialFromError(e));
+        if (!cred) throw e;
+        const r = await auth.signInWithCredential(cred);
+        await loadPlayer(r.user);
+        setMsgS('このGoogleアカウントの記録を読み込みました');
+      }
+    } else {
+      const r = await auth.signInWithPopup(provider);
+      await loadPlayer(r.user);
+    }
+  } catch (e) {
+    console.warn(e);
+    setMsgS(loginErrMsg(e), true);
+  }
+  renderMyRating();
+}
+async function googleLogout() {
+  if (!confirm('ログアウトしますか？\n記録はGoogleアカウントに残っていて、もう一度ログインすれば戻ります。')) return;
+  try {
+    const auth = firebase.auth();
+    await auth.signOut();
+    nameIn.value = '';
+    P.best = {peak: 0, dur: 0};
+    try { localStorage.removeItem('vs_best'); localStorage.removeItem('vs_name'); } catch(e) {}
+    const r = await auth.signInAnonymously();
+    await loadPlayer(r.user);
+    setMsgS('ログアウトしました');
+  } catch (e) {
+    console.warn(e);
+    setMsgS('ログアウトできませんでした（' + (e.code || e.message) + '）', true);
+  }
+}
 function renderMyRating() {
+  renderAccount();
   const el = $('#myRate');
   el.textContent = '';
   if (FB.ok) {
@@ -333,6 +471,7 @@ async function savePlayer() {
   try {
     await FB.db.collection('players').doc(FB.uid).set({
       name: FB.me.name, rating: FB.me.rating, wins: FB.me.wins, losses: FB.me.losses, draws: FB.me.draws,
+      bestPeak: FB.me.bestPeak || 0, bestDur: FB.me.bestDur || 0,
       updatedAt: Date.now()
     });
   } catch (e) { console.warn('save', e); }
@@ -344,9 +483,10 @@ function applyRated(winner) {
   const my = FB.me.rating, op = oppRating;
   const s = winner === 2 ? 0.5 : (winner === i ? 1 : 0);
   const e = 1 / (1 + Math.pow(10, (op - my) / 400));
-  const delta = Math.round(K * (s - e));
-  FB.me.rating = my + delta;
-  oppRating = op - delta;
+  const raw = Math.round(K * (s - e));
+  FB.me.rating = Math.max(0, my + raw);           // 0 より下がらない
+  oppRating = Math.max(0, op - raw);
+  const delta = FB.me.rating - my;                // 実際に動いた分を表示する
   if (s === 1) FB.me.wins++; else if (s === 0) FB.me.losses++; else FB.me.draws++;
   lastDelta = {delta, rating: FB.me.rating};
   savePlayer();
@@ -360,11 +500,12 @@ async function showRanking() {
   list.textContent = ''; meEl.textContent = '読み込み中…';
   if (!FB.ok) { meEl.textContent = FB.err === 'notset' ? 'ランキングは準備中です（Firebase未設定）' : 'オンラインに接続できません'; return; }
   try {
-    const q = await FB.db.collection('players').orderBy('rating', 'desc').limit(50).get();
+    const q = await FB.db.collection('players').orderBy('rating', 'desc').limit(100).get();
     let mine = 0, n = 0;
     q.forEach(doc => {
-      n++;
       const d = doc.data();
+      if (!((d.wins | 0) + (d.losses | 0) + (d.draws | 0)) || n >= 50) return;   // まだ取組をしていない人は載せない
+      n++;
       const li = document.createElement('li');
       if (doc.id === FB.uid) { li.className = 'me'; mine = n; }
       const no = document.createElement('span'); no.className = 'no'; no.textContent = n;
@@ -813,8 +954,10 @@ function startPractice() {
 function stopPractice() { clearInterval(P.timer); P.timer = null; }
 $('#pBack').onclick = () => { stopPractice(); show('title'); };
 $('#pReset').onclick = () => {
+  if (!confirm('稽古場の自己ベストを消しますか？' + (FB.ok ? '\n（アカウントに保存された記録も消えます）' : ''))) return;
   P.best = {peak: 0, dur: 0};
   try { localStorage.removeItem('vs_best'); } catch(e) {}
+  if (FB.ok) { FB.me.bestPeak = 0; FB.me.bestDur = 0; savePlayer(); }
   renderBest(false, false);
 };
 
@@ -844,7 +987,10 @@ function finishShout() {
   const newPeak = peak > P.best.peak, newDur = dur > P.best.dur;
   if (newPeak) P.best.peak = peak;
   if (newDur) P.best.dur = dur;
-  if (newPeak || newDur) { try { localStorage.setItem('vs_best', JSON.stringify(P.best)); } catch(e) {} }
+  if (newPeak || newDur) {
+    try { localStorage.setItem('vs_best', JSON.stringify(P.best)); } catch(e) {}
+    if (FB.ok) { FB.me.bestPeak = P.best.peak; FB.me.bestDur = P.best.dur; savePlayer(); }   // アカウントにも保存
+  }
   renderBest(newPeak, newDur);
 }
 function renderBest(newPeak, newDur) {
