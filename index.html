@@ -4,125 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
 <title>ボイス相撲</title>
+
+<!-- レート・ランキング・オンライン対戦用（Firebase） -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
-<script>window.VOICE_SUMO_FIREBASE = {"apiKey":"AIzaSyDEQ6rcy3HVKLb-eTGLxwzbAIiTBoXTU7s","authDomain":"voice-sumo.firebaseapp.com","databaseURL":"https://voice-sumo-default-rtdb.asia-southeast1.firebasedatabase.app","projectId":"voice-sumo","storageBucket":"voice-sumo.firebasestorage.app","messagingSenderId":"387119119817","appId":"1:387119119817:web:e2f5eb4b00661051103c18"};
-(function () {
-  'use strict';
-  window.createVoiceSumoTransport = function (config, events) {
-    let db, uid, room, guestRef, disconnectRef;
-    let closed = false, opened = false, wasOnline = false, hosting = false;
-    let pending = null, sending = false, lastSent = 0, flushTimer = null;
-    const listeners = [];
-    const fail = error => { if (!closed) events.error(error); };
-    function listen(ref, callback) {
-      ref.on('value', callback, fail); listeners.push([ref, callback]);
-    }
-    function open() {
-      if (!closed && !opened) { opened = true; events.open(); }
-    }
-    async function init() {
-      if (!config || !config.databaseURL) throw new Error('通信先の設定が完了していません');
-      if (!window.firebase) throw new Error('通信機能を読み込めません。ページを再読み込みしてください');
-      const app = firebase.apps.find(a => a.name === 'voice-sumo') || firebase.initializeApp(config, 'voice-sumo');
-      const auth = app.auth();
-      await auth.setPersistence(firebase.auth.Auth.Persistence.NONE);
-      const user = auth.currentUser || (await auth.signInAnonymously()).user;
-      if (closed) throw new Error('接続をキャンセルしました');
-      uid = user.uid; db = app.database();
-      listen(db.ref('.info/connected'), snap => {
-        if (closed) return;
-        if (snap.val()) wasOnline = true;
-        else if (wasOnline && room) events.close('通信が切れました。部屋を作り直してください');
-      });
-    }
-    async function create(name) {
-      hosting = true; await init();
-      for (let attempt = 0; attempt < 10; attempt++) {
-        if (closed) return;
-        const code = String(Math.floor(1000 + Math.random() * 9000));
-        const candidate = db.ref('voiceSumoRooms/' + code);
-        const result = await candidate.transaction(current => current ? undefined : {
-          hostUid: uid, hostName: name, createdAt: firebase.database.ServerValue.TIMESTAMP
-        }, undefined, false);
-        if (!result.committed) continue;
-        room = candidate;
-        if (closed) { await candidate.remove(); return; }
-        disconnectRef = room.onDisconnect(); await disconnectRef.remove();
-        if (closed) { await candidate.remove(); return; }
-        events.room(code);
-        listen(room.child('guest'), snap => {
-          if (closed) return;
-          const player = snap.val();
-          if (!player) { if (opened) events.close('相手が退出しました'); return; }
-          if (!opened) { events.data({ t: 'hello', name: player.name }); open(); }
-          events.data({ t: 'vol', v: player.v });
-          events.data({ t: 'ready', on: player.ready });
-        });
-        return;
-      }
-      throw new Error('部屋を作れませんでした。もう一度お試しください');
-    }
-    async function join(code, name) {
-      await init(); if (closed) return;
-      room = db.ref('voiceSumoRooms/' + code);
-      const snapshot = await room.once('value'); const value = snapshot.val();
-      if (closed) return;
-      if (!value || !value.hostUid) throw new Error('その部屋は見つかりません。相手に部屋を作り直してもらってください');
-      if (value.hostUid === uid) throw new Error('同じブラウザーでは参加できません。別の端末で開いてください');
-      if (value.guest && value.guest.uid !== uid) throw new Error('その部屋は満員です');
-      const candidate = room.child('guest');
-      const result = await candidate.transaction(current => {
-        if (current && current.uid !== uid) return;
-        return { uid, name, v: 0, ready: false };
-      }, undefined, false);
-      if (!result.committed) throw new Error('その部屋は満員です');
-      guestRef = candidate;
-      if (closed) { await candidate.remove(); return; }
-      disconnectRef = guestRef.onDisconnect(); await disconnectRef.remove();
-      if (closed) { await guestRef.remove(); return; }
-      listen(room, snap => {
-        if (closed) return;
-        const current = snap.val();
-        if (!current || !current.guest || current.guest.uid !== uid) {
-          events.close('部屋が閉じられました。相手に部屋を作り直してもらってください'); return;
-        }
-        if (current.state) { open(); events.data(current.state); }
-      });
-    }
-    function send(message) {
-      if (closed || !opened) return;
-      if (hosting && message.t === 'state') pending = { ...message };
-      else if (!hosting && message.t === 'vol') pending = { ...(pending || {}), v: message.v };
-      else if (!hosting && message.t === 'ready') pending = { ...(pending || {}), ready: message.on };
-      else return;
-      schedule();
-    }
-    function schedule() {
-      if (closed || sending || flushTimer || !pending) return;
-      flushTimer = setTimeout(flush, Math.max(0, 100 - (Date.now() - lastSent)));
-    }
-    async function flush() {
-      flushTimer = null; if (closed || !pending) return;
-      const payload = pending; pending = null; sending = true; lastSent = Date.now();
-      try {
-        if (hosting) await room.child('state').set(payload);
-        else await guestRef.update(payload);
-      } catch (error) { fail(error); }
-      finally { sending = false; schedule(); }
-    }
-    function close() {
-      if (closed) return;
-      closed = true; clearTimeout(flushTimer); pending = null;
-      listeners.forEach(([ref, callback]) => ref.off('value', callback));
-      const owned = hosting ? room : guestRef;
-      if (owned) owned.remove().then(() => disconnectRef && disconnectRef.cancel()).catch(() => {});
-    }
-    return { create, join, send, close };
-  };
-})();
-</script>
+<script src="firebase-config.js?v=20261127"></script>
+<script src="firebase-relay.js?v=20261127"></script>
 <style>
 :root{
   --bg:#1b1410; --panel:#2a201a; --ink:#f6efe3; --sub:#c9b9a3; --accent:#e0a63a;
@@ -138,6 +27,7 @@ button,input{font:inherit}
 h1{font-size:clamp(44px,13vw,84px);letter-spacing:.1em;line-height:1.1;text-align:center;
   text-shadow:0 4px 0 #000,0 0 30px rgba(224,166,58,.35)}
 h1 small{display:block;font-size:.28em;letter-spacing:.3em;color:var(--accent);margin-bottom:6px}
+h2{font-size:28px;letter-spacing:.3em}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;width:100%;max-width:380px;display:flex;flex-direction:column;gap:12px}
 label{font-size:13px;color:var(--sub)}
 input[type=text],input[type=tel]{width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:#120d0a;color:var(--ink);font-size:18px}
@@ -145,20 +35,39 @@ input[type=text],input[type=tel]{width:100%;padding:12px;border-radius:10px;bord
 .btn:active{transform:translateY(1px)}
 .btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
 .btn:disabled{opacity:.45;cursor:default}
+.btn small{display:block;font-size:11px;font-weight:normal;letter-spacing:0;opacity:.8}
 .row{display:flex;gap:8px}
 .row>*{flex:1}
+.sec{font-size:13px;color:var(--sub);border-top:1px solid var(--line);padding-top:10px;margin-top:2px}
+.myrate{text-align:center;font-size:14px;color:var(--sub);min-height:1.2em}
+.myrate b{color:var(--accent);font-size:22px;font-family:ui-monospace,Consolas,monospace;margin:0 4px}
 .code{font-size:56px;letter-spacing:.25em;text-align:center;font-family:ui-monospace,Consolas,monospace;color:var(--accent)}
 .hint{font-size:13px;color:var(--sub);text-align:center;line-height:1.6}
 .err{color:#ff8a7a;font-size:14px;text-align:center;min-height:1em}
+/* ランキング */
+#rank{justify-content:flex-start;padding-top:max(16px,env(safe-area-inset-top))}
+.rlist{list-style:none;width:100%;max-width:520px;display:flex;flex-direction:column;gap:6px}
+.rlist li{display:grid;grid-template-columns:2.4em 1fr auto auto;gap:10px;align-items:center;background:var(--panel);
+  border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.rlist li.me{border-color:var(--accent);background:#3a2a17}
+.rlist .no{font-family:ui-monospace,Consolas,monospace;color:var(--sub);text-align:right}
+.rlist li:nth-child(1) .no{color:#ffd54a}.rlist li:nth-child(2) .no{color:#d7dde5}.rlist li:nth-child(3) .no{color:#d9925a}
+.rlist .rn{font-weight:bold;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rlist .rr{font-family:ui-monospace,Consolas,monospace;font-size:20px;color:var(--accent)}
+.rlist .rw{font-size:12px;color:var(--sub);white-space:nowrap}
+.rankme{width:100%;max-width:520px;text-align:center;font-size:14px;color:var(--sub)}
 /* game */
 #game{justify-content:flex-start;padding-top:max(12px,env(safe-area-inset-top))}
 .hud{width:100%;max-width:720px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+#game,#practice{overflow-x:hidden;overflow-x:clip}   /* 伸びたバーで画面が横にずれないように */
 .side{flex:1;display:flex;flex-direction:column;gap:4px;min-width:0}
 .side.e{align-items:flex-end;text-align:right}
 .nm{font-size:20px;font-weight:bold;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 .nm .you{font-size:11px;background:var(--accent);color:#221;border-radius:4px;padding:1px 5px;margin:0 4px;vertical-align:middle}
+.nm .rt{font-size:12px;font-weight:normal;color:var(--sub);margin:0 4px;font-family:ui-monospace,Consolas,monospace}
 .w .nm{color:#ff9d8a}.e .nm{color:#9db4ff}
-.score{font-size:30px;font-family:ui-monospace,Consolas,monospace;padding:0 6px}
+.mode{font-size:11px;color:var(--sub);text-align:center}
+.score{font-size:30px;font-family:ui-monospace,Consolas,monospace;padding:0 6px;text-align:center}
 .meter{width:100%;height:14px;background:#120d0a;border-radius:7px;border:1px solid var(--line);position:relative}
 .meter i{display:block;height:100%;width:0;border-radius:7px;position:relative;z-index:5}
 /* 枠は 100。それより大きい声はバーがそのまま枠の外へ伸びる */
@@ -168,7 +77,6 @@ input[type=text],input[type=tel]{width:100%;padding:12px;border-radius:10px;bord
 .e .meter i{background:linear-gradient(90deg,#1d2f6b,var(--east),#9fe0ff)}
 /* 稽古場 */
 #practice{justify-content:flex-start;gap:12px;padding-top:max(16px,env(safe-area-inset-top))}
-.ptitle{font-size:28px;letter-spacing:.3em}
 .pnow{width:100%;max-width:520px;text-align:center}
 .big{font-size:clamp(72px,24vw,120px);font-weight:bold;line-height:1;font-family:ui-monospace,Consolas,monospace;color:var(--accent);
   font-variant-numeric:tabular-nums}
@@ -197,6 +105,7 @@ canvas{width:100%;height:100%;display:block;border-radius:14px}
 @keyframes pop{0%{transform:scale(1.8);opacity:0}100%{transform:scale(1);opacity:1}}
 .controls{width:100%;max-width:720px;display:flex;flex-direction:column;gap:10px}
 .status{text-align:center;color:var(--sub);font-size:14px;min-height:1.4em}
+.status .up{color:#7ed6a5;font-weight:bold}.status .down{color:#ff8a7a;font-weight:bold}
 details{font-size:13px;color:var(--sub)}
 details summary{cursor:pointer;padding:4px 0}
 input[type=range]{width:100%;accent-color:var(--accent)}
@@ -213,22 +122,28 @@ input[type=range]{width:100%;accent-color:var(--accent)}
   <div class="card">
     <label for="name">プレイヤー名</label>
     <input id="name" type="text" maxlength="8" placeholder="例：大声山">
-    <button class="btn" id="btnCreate">部屋を作る</button>
+    <div class="myrate" id="myRate"></div>
+    <button class="btn" id="btnOnline">オンライン対戦<small>知らない人と・レート変動あり</small></button>
+    <div class="sec">友達と対戦（レート変動なし）</div>
+    <button class="btn ghost" id="btnCreate">部屋を作る</button>
     <div class="row">
       <input id="joinCode" type="tel" inputmode="numeric" maxlength="4" placeholder="部屋番号">
       <button class="btn ghost" id="btnJoin">入る</button>
     </div>
-    <button class="btn ghost" id="btnPractice">稽古場（声の測定）</button>
+    <div class="sec"></div>
+    <div class="row">
+      <button class="btn ghost" id="btnRank">ランキング</button>
+      <button class="btn ghost" id="btnPractice">稽古場</button>
+    </div>
     <div class="err" id="titleErr"></div>
   </div>
-  <p class="hint">2台の端末で対戦します。<br>片方が「部屋を作る」、もう片方が部屋番号を入れて「入る」。<br>マイクの使用を許可してください。</p>
-  <p class="hint">声が大きい方が押す。土俵の外に出したら勝ち。</p>
+  <p class="hint">声が大きい方が押す。土俵の外に出したら勝ち。<br>相手より200以上大きい声を出すと<b>投げ技</b>で一発勝ち。</p>
 </section>
 
-<!-- 待機 -->
+<!-- 友達対戦の待機 -->
 <section id="wait" class="screen">
   <div class="card">
-    <p class="hint">部屋番号</p>
+    <p class="hint">部屋番号（友達に伝えてください）</p>
     <div class="code" id="roomCode">----</div>
     <button class="btn ghost" id="btnShare">招待リンクをコピー</button>
     <p class="hint" id="waitStatus">相手の入場を待っています…</p>
@@ -236,9 +151,30 @@ input[type=range]{width:100%;accent-color:var(--accent)}
   </div>
 </section>
 
+<!-- オンライン対戦の相手さがし -->
+<section id="search" class="screen">
+  <div class="card">
+    <h2 style="text-align:center;font-size:22px">相手を探しています</h2>
+    <div class="code" id="searchTime" style="font-size:40px">0</div>
+    <p class="hint" id="searchStatus">同じ時間にオンライン対戦を押した人と組み合わせます</p>
+    <button class="btn ghost" id="btnSearchCancel">やめる</button>
+  </div>
+</section>
+
+<!-- ランキング -->
+<section id="rank" class="screen">
+  <h2>番付</h2>
+  <div class="rankme" id="rankMe"></div>
+  <ol class="rlist" id="rankList"></ol>
+  <div class="row" style="width:100%;max-width:520px">
+    <button class="btn ghost" id="btnRankReload">更新</button>
+    <button class="btn ghost" id="btnRankBack">戻る</button>
+  </div>
+</section>
+
 <!-- 稽古場 -->
 <section id="practice" class="screen">
-  <h2 class="ptitle">稽古場</h2>
+  <h2>稽古場</h2>
   <div class="pnow">
     <div class="big" id="pLevel">0</div>
     <div class="bigsub">今の声の大きさ（上限なし・100がふつうの大声の目安）</div>
@@ -282,7 +218,10 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       <div class="nm" id="nmW">東</div>
       <div class="meter"><i id="mW"></i></div>
     </div>
-    <div class="score" id="score">0-0</div>
+    <div>
+      <div class="score" id="score">0-0</div>
+      <div class="mode" id="modeTag"></div>
+    </div>
     <div class="side e">
       <div class="nm" id="nmE">西</div>
       <div class="meter"><i id="mE"></i></div>
@@ -312,14 +251,24 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 (() => {
 'use strict';
 const $ = s => document.querySelector(s);
+const PREFIX = 'voicesumo-v1-';
 const TICK = 33;               // ms
 const BOUT_TIME = 30;          // 秒（時間切れは前に出ている方の勝ち）
+const THROW_DIFF = 200;        // この差以上で投げ技
+const THROW_TICKS = 3;         // 差が約0.1秒続いたら決まる（一瞬の雑音では決まらない）
+const THROWS = ['上手投げ', '下手投げ', '小手投げ', 'すくい投げ'];
+const START_RATING = 1500, K = 32;
 
 // ---------- 状態 ----------
 let role = null;               // 'host' | 'guest'
-
+let ranked = false;            // true = オンライン対戦（レート変動あり）
+let peer = null, conn = null;
 let loopTimer = null;
 let oppVol = 0, oppVolAt = 0;
+let oppRating = START_RATING;  // 相手のレート（hello で受け取る）
+let lastBout = -1;             // ゲスト：レート反映済みの取組番号
+let lastDelta = null;          // 直前の取組のレート変動
+let endAtLocal = 0;            // 決着した瞬間（演出用）
 const S = {                    // ホストが持つ正の状態（ゲストは受信して表示）
   phase: 'wait',               // wait | count | fight | end
   pos: 0, vel: 0,              // pos: -1(東の負け)…+1(西の負け)
@@ -327,7 +276,8 @@ const S = {                    // ホストが持つ正の状態（ゲストは�
   ready: [false, false],
   names: ['', ''],
   score: [0, 0],
-  t0: 0, winner: -1, reason: ''
+  t0: 0, winner: -1, reason: '', kind: '',   // kind: push | throw | time | draw | forfeit
+  bout: 0, throwT: [0, 0]
 };
 let viewPos = 0;               // 描画用に補間した位置
 const me = () => role === 'guest' ? 1 : 0;
@@ -341,8 +291,104 @@ function myName() {
   return n;
 }
 
+// ---------- Firebase（レート・ランキング・相手さがし） ----------
+const FB = {ok: false, db: null, uid: null, me: null, err: ''};
+async function fbInit() {
+  const cfg = window.FIREBASE_CONFIG;
+  if (!cfg || !cfg.apiKey || typeof firebase === 'undefined') { FB.err = 'notset'; renderMyRating(); return; }
+  try {
+    if (!firebase.apps.length) firebase.initializeApp(cfg);
+    const cred = await firebase.auth().signInAnonymously();      // 端末ごとに匿名IDが1つ（ブラウザに保存される）
+    FB.uid = cred.user.uid;
+    FB.db = firebase.firestore();
+    const snap = await FB.db.collection('players').doc(FB.uid).get();
+    const d = snap.exists ? snap.data() : {};
+    FB.me = {name: d.name || '', rating: Number(d.rating) || START_RATING,
+             wins: d.wins | 0, losses: d.losses | 0, draws: d.draws | 0};
+    FB.ok = true;
+  } catch (e) {
+    console.warn(e);
+    FB.err = e.code || e.message || 'error';
+  }
+  renderMyRating();
+}
+function renderMyRating() {
+  const el = $('#myRate');
+  el.textContent = '';
+  if (FB.ok) {
+    el.append('あなたのレート');
+    const b = document.createElement('b'); b.textContent = FB.me.rating; el.append(b);
+    el.append(`${FB.me.wins}勝 ${FB.me.losses}敗` + (FB.me.draws ? ` ${FB.me.draws}分` : ''));
+  } else if (FB.err === 'notset') {
+    el.textContent = 'オンライン対戦・ランキングは準備中（Firebase未設定）';
+  } else if (FB.err) {
+    el.textContent = 'オンラインに接続できません（' + FB.err + '）';
+  } else {
+    el.textContent = 'オンラインに接続中…';
+  }
+}
+async function savePlayer() {
+  if (!FB.ok) return;
+  FB.me.name = myName();
+  try {
+    await FB.db.collection('players').doc(FB.uid).set({
+      name: FB.me.name, rating: FB.me.rating, wins: FB.me.wins, losses: FB.me.losses, draws: FB.me.draws,
+      updatedAt: Date.now()
+    });
+  } catch (e) { console.warn('save', e); }
+}
+// レート計算（イロレーティング）。winner: 0/1/2(引き分け)
+function applyRated(winner) {
+  if (!ranked || !FB.ok) return;
+  const i = me();
+  const my = FB.me.rating, op = oppRating;
+  const s = winner === 2 ? 0.5 : (winner === i ? 1 : 0);
+  const e = 1 / (1 + Math.pow(10, (op - my) / 400));
+  const delta = Math.round(K * (s - e));
+  FB.me.rating = my + delta;
+  oppRating = op - delta;
+  if (s === 1) FB.me.wins++; else if (s === 0) FB.me.losses++; else FB.me.draws++;
+  lastDelta = {delta, rating: FB.me.rating};
+  savePlayer();
+  renderMyRating();
+}
+
+// ---------- ランキング ----------
+async function showRanking() {
+  show('rank');
+  const list = $('#rankList'), meEl = $('#rankMe');
+  list.textContent = ''; meEl.textContent = '読み込み中…';
+  if (!FB.ok) { meEl.textContent = FB.err === 'notset' ? 'ランキングは準備中です（Firebase未設定）' : 'オンラインに接続できません'; return; }
+  try {
+    const q = await FB.db.collection('players').orderBy('rating', 'desc').limit(50).get();
+    let mine = 0, n = 0;
+    q.forEach(doc => {
+      n++;
+      const d = doc.data();
+      const li = document.createElement('li');
+      if (doc.id === FB.uid) { li.className = 'me'; mine = n; }
+      const no = document.createElement('span'); no.className = 'no'; no.textContent = n;
+      const nm = document.createElement('span'); nm.className = 'rn'; nm.textContent = String(d.name || '名無し').slice(0, 8);
+      const rw = document.createElement('span'); rw.className = 'rw'; rw.textContent = `${d.wins | 0}勝${d.losses | 0}敗`;
+      const rr = document.createElement('span'); rr.className = 'rr'; rr.textContent = Math.round(Number(d.rating) || 0);
+      li.append(no, nm, rw, rr);
+      list.appendChild(li);
+    });
+    if (!n) meEl.textContent = 'まだ誰も取組をしていません';
+    else if (mine) meEl.textContent = `あなたは ${mine} 位（レート ${FB.me.rating}）`;
+    else meEl.textContent = (FB.me.wins + FB.me.losses + FB.me.draws)
+      ? `あなたは 50 位圏外（レート ${FB.me.rating}）` : 'オンライン対戦をすると番付に載ります';
+  } catch (e) {
+    console.warn(e);
+    meEl.textContent = '読み込めませんでした（' + (e.code || e.message) + '）';
+  }
+}
+$('#btnRank').onclick = showRanking;
+$('#btnRankReload').onclick = showRanking;
+$('#btnRankBack').onclick = () => show('title');
+
 // ---------- マイク ----------
-const mic = {an: null, buf: null, floor: -60, level: 0, ok: false};
+const mic = {an: null, buf: null, floor: -60, level: 0, raw: 0, ok: false};
 const sensIn = $('#sens');
 try { const s = localStorage.getItem('vs_sens'); if (s !== null) sensIn.value = s; } catch(e) {}
 sensIn.addEventListener('input', () => { try { localStorage.setItem('vs_sens', sensIn.value); } catch(e) {} });
@@ -390,10 +436,11 @@ function calibrate() {
 function readMic() {
   if (!mic.ok) return 0;
   const db = rawDb();
-  const top = -4 - Number(sensIn.value) * 1.2;            // この dB で 100
+  const top = -4 - Number(sensIn.value) * 1.2;            // この dB で 100（ふつうの大声）
   const floor = Math.min(mic.floor, top - 12);
-  let lv = (db - floor) / (top - floor);
-  lv = Math.max(0, lv) * 100;                               // 上限なし（100 は目安）
+  let lv;
+  if (db <= top) lv = Math.max(0, (db - floor) / (top - floor)) * 100;
+  else lv = 100 * Math.pow(10, (db - top) / 20);           // 100 より上は音の強さに比例してグンと伸びる
   mic.raw = lv;
   // 立ち上がりは速く、減衰はゆっくり
   mic.level += (lv - mic.level) * (lv > mic.level ? 0.6 : 0.18);
@@ -406,6 +453,13 @@ function show(id) {
   if (id === 'game') resize();
 }
 function titleErr(t) { $('#titleErr').textContent = t; }
+function backToTitle(msg) {
+  stopSearch();
+  cleanup();
+  role = null; ranked = false;
+  titleErr(msg || '');
+  show('title');
+}
 
 // ---------- 開始ボタン ----------
 async function needMic() {
@@ -419,11 +473,23 @@ async function needMic() {
   return ok;
 }
 
-$('#btnCreate').onclick = () => connectOnline('host');
-$('#btnJoin').onclick = () => {
- const code = $('#joinCode').value.normalize('NFKC').replace(/\D/g, '');
- if (code.length !== 4) { titleErr('4桁の部屋番号を入れてください'); return; }
- connectOnline('guest', code);
+$('#btnOnline').onclick = async () => {
+  if (!FB.ok) { titleErr(FB.err === 'notset' ? 'オンライン対戦は準備中です（Firebase未設定）' : 'オンラインに接続できません'); return; }
+  if (!await needMic()) return;
+  try { startSearch(); } catch (e) { backToTitle(e.message); }
+};
+$('#btnCreate').onclick = async () => {
+  if (!await needMic()) return;
+  role = 'host'; ranked = false;
+  S.names[0] = myName();
+  try { createRoom(0); } catch (e) { titleErr(e.message); role = null; }
+};
+$('#btnJoin').onclick = async () => {
+  const code = $('#joinCode').value.normalize('NFKC').replace(/\D/g, '');
+  if (code.length !== 4) { titleErr('4桁の部屋番号を入れてください'); return; }
+  if (!await needMic()) return;
+  role = 'guest'; ranked = false;
+  try { joinRoom(code); } catch (e) { titleErr(e.message); role = null; }
 };
 $('#btnPractice').onclick = async () => {
   if (!await needMic()) return;
@@ -431,88 +497,189 @@ $('#btnPractice').onclick = async () => {
   startPractice();
 };
 
-// ---------- オンライン（ボイス相撲専用Firebase） ----------
-let transport = null, connecting = false, connectionTimer = null;
-function setConnecting(value) {
-  connecting = value;
-  ['#btnCreate','#btnJoin','#btnPractice'].forEach(id => { $(id).disabled = value; });
+// ---------- Firebase経由の対戦通信 ----------
+function newPeer(id) {
+  if (!FB.ok) throw new Error('Firebaseに接続中です。少し待ってからお試しください。');
+  return new window.FirebaseRelayPeer(id);
 }
-function networkError(error) {
-  const code = error && error.code || '';
-  if (/permission.denied|PERMISSION_DENIED/i.test(code)) return '通信の設定を確認中です。しばらくしてからお試しください。';
-  if (/network|disconnected/i.test(code)) return 'ネット接続を確認して、もう一度お試しください。';
-  return error && error.message || '接続できませんでした。もう一度お試しください。';
+// 友達対戦：部屋番号つきで待つ
+function createRoom(tries) {
+  const code = String(Math.floor(1000 + Math.random() * 9000));
+  peer = newPeer(PREFIX + code);
+  peer.on('open', () => {
+    $('#roomCode').textContent = code;
+    $('#waitStatus').textContent = '相手の入場を待っています…';
+    show('wait');
+  });
+  peer.on('error', e => {
+    if (e.type === 'unavailable-id' && tries < 5) { peer.destroy(); createRoom(tries + 1); return; }
+    console.warn(e);
+    if (!conn) backToTitle('通信エラー：' + e.type);
+  });
+  peer.on('connection', acceptConn);
 }
-async function connectOnline(kind, code) {
-  if (connecting) return;
-  cleanup(); setConnecting(true);
-  if (!await needMic()) { setConnecting(false); return; }
-  role = kind; S.names[0] = kind === 'host' ? myName() : '';
-  titleErr(kind === 'host' ? '部屋を作っています…' : '接続中…');
-  let current;
-  const fail = error => {
-    if (current && transport !== current) return;
-    cleanup(); role = null; show('title'); titleErr(networkError(error));
-  };
+function acceptConn(c) {
+  if (conn && conn.open) { c.on('open', () => { c.send({t: 'full'}); setTimeout(() => c.close(), 300); }); return; }
+  role = 'host';
+  S.names[0] = myName();
+  setupConn(c);
+}
+// 友達対戦：部屋番号で入る
+function joinRoom(code) {
+  peer = newPeer();
+  titleErr('接続中…');
+  const failTimer = setTimeout(() => { if (!conn || !conn.open) backToTitle('つながりませんでした。部屋番号を確認してください。'); }, 12000);
+  peer.on('open', () => {
+    const c = peer.connect(PREFIX + code, {reliable: true, serialization: 'json'});
+    setupConn(c, () => clearTimeout(failTimer));
+  });
+  peer.on('error', e => {
+    console.warn(e);
+    clearTimeout(failTimer);
+    backToTitle(e.type === 'peer-unavailable' ? 'その部屋は見つかりません' : '通信エラー：' + e.type);
+  });
+}
+
+// ---------- オンライン対戦：相手さがし ----------
+// Firestore の queue に「待っている人」を書き、他の人が見つけたら取り合い（トランザクション）で1組だけ成立させる
+const MM = {on: false, timer: null, clock: null, peerId: '', inQueue: false, connecting: false, t0: 0};
+function startSearch() {
+  ranked = true; role = null;
+  MM.on = true; MM.inQueue = false; MM.connecting = false; MM.t0 = Date.now();
+  $('#searchStatus').textContent = '同じ時間にオンライン対戦を押した人と組み合わせます';
+  show('search');
+  savePlayer();
+  peer = newPeer();
+  peer.on('open', id => {
+    MM.peerId = id;
+    searchTick();
+    MM.timer = setInterval(searchTick, 3000);
+  });
+  peer.on('connection', c => {                    // 誰かが自分を見つけてつないできた
+    if (!MM.on && conn) { acceptConn(c); return; }
+    stopSearch();
+    acceptConn(c);
+  });
+  peer.on('error', e => {
+    console.warn(e);
+    if (e.type === 'peer-unavailable') {          // 見つけた相手がもう居なかった → 探し直し
+      MM.connecting = false; conn = null; role = null;
+      return;
+    }
+    if (!conn) backToTitle('通信エラー：' + e.type);
+  });
+  MM.clock = setInterval(() => { $('#searchTime').textContent = Math.floor((Date.now() - MM.t0) / 1000); }, 250);
+}
+async function searchTick() {
+  if (!MM.on || MM.connecting) return;
+  const qref = FB.db.collection('queue');
   try {
-    current = window.createVoiceSumoTransport(window.VOICE_SUMO_FIREBASE, {
-      room: roomCode => {
-        if (transport !== current) return;
-        clearTimeout(connectionTimer); connectionTimer = null;
-        setConnecting(false); titleErr(''); $('#roomCode').textContent = roomCode;
-        $('#waitStatus').textContent = '相手の入場を待っています…'; show('wait');
-      },
-      open: () => {
-        if (transport !== current) return;
-        clearTimeout(connectionTimer); connectionTimer = null;
-        setConnecting(false); titleErr('');
-        if (role === 'host') { resetMatch(true); startGame(); hostStep(); }
-      },
-      data: data => { if (transport === current) onData(data); },
-      close: message => { if (transport === current) disconnected(message); },
-      error: fail
-    });
-    transport = current;
-    connectionTimer = setTimeout(() => fail(new Error('接続がタイムアウトしました。ネット接続を確認して、もう一度お試しください。')), 25000);
-    if (kind === 'host') await current.create(S.names[0]);
-    else await current.join(code, myName());
-  } catch (error) { fail(error); }
+    const q = await qref.where('ts', '>', Date.now() - 15000).orderBy('ts').limit(10).get();
+    if (!MM.on) return;
+    // 自分も待っている時は、IDが自分より小さい相手だけ取りに行く（お互いに取り合うのを防ぐ）
+    const cand = q.docs.find(d => d.id !== FB.uid && (!MM.inQueue || d.id < FB.uid));
+    if (cand) {
+      const got = await FB.db.runTransaction(async tx => {
+        const s = await tx.get(cand.ref);
+        if (!s.exists) return null;
+        tx.delete(cand.ref);
+        return s.data();
+      });
+      if (got && got.peerId && MM.on) {
+        MM.connecting = true;
+        await removeFromQueue();
+        role = 'guest';
+        const c = peer.connect(String(got.peerId), {reliable: true, serialization: 'json'});
+        setupConn(c, () => stopSearch());
+        setTimeout(() => { if (MM.on && (!conn || !conn.open)) { MM.connecting = false; conn = null; role = null; } }, 8000);
+        return;
+      }
+    }
+    // 見つからなければ自分が待つ（3秒ごとに生存を知らせる）
+    await qref.doc(FB.uid).set({peerId: MM.peerId, name: myName(), rating: FB.me.rating, ts: Date.now()});
+    MM.inQueue = true;
+  } catch (e) {
+    console.warn('search', e);
+    $('#searchStatus').textContent = 'うまく探せません（' + (e.code || e.message) + '）。続けて試しています…';
+  }
 }
-function send(message) { if (transport) transport.send(message); }
+async function removeFromQueue() {
+  if (!MM.inQueue || !FB.ok) return;
+  MM.inQueue = false;
+  try { await FB.db.collection('queue').doc(FB.uid).delete(); } catch (e) {}
+}
+function stopSearch() {
+  MM.on = false; MM.connecting = false;
+  clearInterval(MM.timer); clearInterval(MM.clock); MM.timer = MM.clock = null;
+  removeFromQueue();
+}
+$('#btnSearchCancel').onclick = () => backToTitle();
+
+// ---------- 接続後（両モード共通） ----------
+function setupConn(c, onOpen) {
+  conn = c;
+  c.on('open', () => {
+    onOpen && onOpen();
+    titleErr('');
+    send({t: 'hello', name: role === 'host' ? S.names[0] : myName(), rating: FB.ok ? FB.me.rating : START_RATING, ranked});
+    if (role === 'host') { resetMatch(true); startGame(); }
+  });
+  c.on('data', onData);
+  c.on('close', () => { if (conn === c) disconnected(); });
+  c.on('error', e => console.warn(e));
+}
+function send(o) { if (conn && conn.open) { try { conn.send(o); } catch(e) {} } }
 
 function onData(d) {
   if (!d || typeof d !== 'object') return;
+  if (d.t === 'hello') {
+    oppRating = clampN(d.rating, 0, 10000) || START_RATING;
+    if (role === 'host') S.names[1] = String(d.name || '西ノ海').slice(0, 8);
+    return;
+  }
   if (role === 'host') {
-    if (d.t === 'hello') { S.names[1] = String(d.name || '西ノ海').slice(0, 8); }
-    else if (d.t === 'vol') { oppVol = clampN(d.v, 0, 9999); oppVolAt = performance.now(); }
+    if (d.t === 'vol') { oppVol = clampN(d.v, 0, 99999); oppVolAt = performance.now(); }
     else if (d.t === 'ready') { S.ready[1] = !!d.on; maybeStart(); }
   } else if (role === 'guest') {
     if (d.t === 'state') {
       const prevPhase = S.phase;
-      S.phase = d.phase; S.pos = clampN(d.pos, -1.5, 1.5); S.v = [clampN(d.v[0],0,9999), clampN(d.v[1],0,9999)];
+      S.phase = d.phase; S.pos = clampN(d.pos, -1.5, 1.5); S.v = [clampN(d.v[0],0,99999), clampN(d.v[1],0,99999)];
       S.ready = [!!d.ready[0], !!d.ready[1]]; S.names = [String(d.names[0]).slice(0,8), String(d.names[1]).slice(0,8)];
       S.score = [d.score[0]|0, d.score[1]|0]; S.t0 = performance.now() - (d.el || 0);
-      S.winner = d.winner|0; S.reason = String(d.reason || '');
+      S.winner = d.winner|0; S.reason = String(d.reason || '').slice(0, 12); S.kind = String(d.kind || '');
+      const bout = d.bout | 0;
+      if (lastBout < 0) lastBout = bout;                       // 入った時点までの取組は数えない
+      if (S.phase === 'end' && bout > lastBout) { lastBout = bout; applyRated(S.winner); }
       if (prevPhase !== S.phase) onPhase(prevPhase);
       if (!$('#game').classList.contains('on')) startGame();
     } else if (d.t === 'full') {
-      titleErr('その部屋は満員です'); cleanup();
+      if (ranked) { conn = null; role = null; MM.connecting = false; return; }   // 探し直し
+      backToTitle('その部屋は満員です');
     }
   }
 }
 function clampN(x, a, b) { x = Number(x); return isFinite(x) ? Math.max(a, Math.min(b, x)) : 0; }
 
-function disconnected(message) {
- cleanup(); role = null;
- titleErr(message || '相手との接続が切れました'); show('title');
+function disconnected() {
+  if (role !== 'host' && role !== 'guest') return;
+  let msg = '相手との接続が切れました';
+  // レート戦の取組中に相手が抜けたら不戦勝
+  if (ranked && (S.phase === 'count' || S.phase === 'fight')) {
+    lastDelta = null;
+    applyRated(me());
+    if (lastDelta) msg += '（不戦勝：レート ' + (lastDelta.delta >= 0 ? '+' : '') + lastDelta.delta + '）';
+  }
+  backToTitle(msg);
 }
 function cleanup() {
- stopLoop(); clearTimeout(connectionTimer); connectionTimer = null;
- const previous = transport; transport = null; setConnecting(false);
- if (previous) previous.close();
+  stopLoop();
+  const previousConn = conn, previousPeer = peer;
+  conn = null; peer = null;
+  if (previousConn) { try { previousConn.close(); } catch(e) {} }
+  if (previousPeer) { try { previousPeer.destroy(); } catch(e) {} }
 }
 
-$('#btnCancel').onclick = () => { cleanup(); role = null; show('title'); };
+$('#btnCancel').onclick = () => backToTitle();
 $('#btnShare').onclick = async () => {
   const url = location.origin + location.pathname + '?room=' + $('#roomCode').textContent;
   try {
@@ -520,7 +687,13 @@ $('#btnShare').onclick = async () => {
     else { await navigator.clipboard.writeText(url); $('#btnShare').textContent = 'コピーしました'; }
   } catch(e) { $('#btnShare').textContent = url; }
 };
-$('#btnLeave').onclick = () => { cleanup(); role = null; show('title'); };
+$('#btnLeave').onclick = () => {
+  if (ranked && (S.phase === 'count' || S.phase === 'fight')) {
+    if (!confirm('取組中に降りると負けになります。降りますか？')) return;
+    applyRated(1 - me());
+  }
+  backToTitle();
+};
 
 // ?room=1234 で開かれたら番号を入れておく
 (() => {
@@ -531,14 +704,15 @@ $('#btnLeave').onclick = () => { cleanup(); role = null; show('title'); };
 // ---------- 試合ロジック（ホスト） ----------
 function resetMatch(keepNames) {
   S.phase = 'wait'; S.pos = 0; S.vel = 0; S.v = [0, 0]; S.ready = [false, false];
-  S.score = [0, 0]; S.winner = -1; S.reason = '';
+  S.score = [0, 0]; S.winner = -1; S.reason = ''; S.kind = ''; S.bout = 0; S.throwT = [0, 0];
   if (!keepNames) S.names = ['', ''];
-  viewPos = 0;
+  viewPos = 0; lastDelta = null;
 }
 function maybeStart() {
   if ((S.phase === 'wait' || S.phase === 'end') && S.ready[0] && S.ready[1]) {
     const prev = S.phase;
-    S.phase = 'count'; S.t0 = performance.now(); S.pos = 0; S.vel = 0; S.winner = -1; S.reason = '';
+    S.phase = 'count'; S.t0 = performance.now(); S.pos = 0; S.vel = 0; S.winner = -1; S.reason = ''; S.kind = '';
+    S.throwT = [0, 0];
     onPhase(prev);
   }
 }
@@ -552,31 +726,40 @@ function hostStep() {
     S.phase = 'fight'; S.t0 = now; onPhase('count');
   } else if (S.phase === 'fight') {
     const dt = TICK / 1000;
-    const pw = S.v;
-    const diff = (pw[0] - pw[1]) / 100;              // 正なら東が押している
-    const both = Math.min(S.v[0], S.v[1]) / 100;      // がっぷり四つ度
-    S.vel += diff * 2.4 * dt;
-    S.vel *= 0.90 - both * 0.04;                      // 両者大声だと拮抗しやすい
-    S.pos += S.vel * dt;                              // 圧倒すれば約2秒で寄り切り
-    let w = -1, reason = '';
-    if (S.pos >= 1) { w = 0; reason = '押し出し'; }
-    else if (S.pos <= -1) { w = 1; reason = '押し出し'; }
-    else if ((now - S.t0) / 1000 >= BOUT_TIME) {
-      if (Math.abs(S.pos) < 0.04) { w = 2; reason = '引き分け'; }
-      else { w = S.pos > 0 ? 0 : 1; reason = '時間切れ・優勢'; }
+    let w = -1, reason = '', kind = '';
+    // 投げ技：相手より 200 以上大きい声が少し続いたら一発で決まる
+    for (let i = 0; i < 2; i++) {
+      S.throwT[i] = (S.v[i] - S.v[1 - i] >= THROW_DIFF) ? S.throwT[i] + 1 : 0;
+      if (S.throwT[i] >= THROW_TICKS && w < 0) {
+        w = i; kind = 'throw'; reason = THROWS[Math.floor(Math.random() * THROWS.length)];
+      }
+    }
+    if (w < 0) {
+      const diff = (S.v[0] - S.v[1]) / 100;           // 正なら東が押している
+      const both = Math.min(1, Math.min(S.v[0], S.v[1]) / 100);   // がっぷり四つ度
+      S.vel += diff * 2.4 * dt;
+      S.vel *= 0.90 - both * 0.04;                    // 両者大声だと拮抗しやすい
+      S.pos += S.vel * dt;
+      if (S.pos >= 1) { w = 0; reason = '押し出し'; kind = 'push'; }
+      else if (S.pos <= -1) { w = 1; reason = '押し出し'; kind = 'push'; }
+      else if ((now - S.t0) / 1000 >= BOUT_TIME) {
+        if (Math.abs(S.pos) < 0.04) { w = 2; reason = '引き分け'; kind = 'draw'; }
+        else { w = S.pos > 0 ? 0 : 1; reason = '時間切れ・優勢'; kind = 'time'; }
+      }
     }
     if (w >= 0) {
-      S.phase = 'end'; S.winner = w; S.reason = reason; S.t0 = now;
+      S.phase = 'end'; S.winner = w; S.reason = reason; S.kind = kind; S.t0 = now;
       if (w < 2) S.score[w]++;
+      S.bout++;
       S.ready = [false, false];
       S.pos = Math.max(-1.25, Math.min(1.25, S.pos));
+      applyRated(w);
       onPhase('fight');
     }
   }
-  if (role === 'host') {
-    send({t: 'state', phase: S.phase, pos: +S.pos.toFixed(4), v: [Math.round(S.v[0]), Math.round(S.v[1])],
-      ready: S.ready, names: S.names, score: S.score, el: Math.round(now - S.t0), winner: S.winner, reason: S.reason});
-  }
+  send({t: 'state', phase: S.phase, pos: +S.pos.toFixed(4), v: [Math.round(S.v[0]), Math.round(S.v[1])],
+    ready: S.ready, names: S.names, score: S.score, el: Math.round(now - S.t0), winner: S.winner, reason: S.reason,
+    kind: S.kind, bout: S.bout});
 }
 function guestStep() {
   send({t: 'vol', v: Math.round(readMic())});
@@ -586,6 +769,7 @@ function guestStep() {
 function startGame() {
   show('game');
   stopLoop();
+  lastDelta = null;
   onPhase(null);
   loopTimer = setInterval(() => {
     if (role === 'guest') guestStep(); else hostStep();
@@ -696,7 +880,8 @@ function practiceFrame() {
   // 目盛り
   c.fillStyle = '#6d5a48'; c.font = '10px sans-serif';
   for (let s = 0; s <= 10; s += 2) { const x = w - s / 10 * w; c.fillRect(x, h - 4, 1, 4); }
-  c.fillText('10秒前', 4, h - 6); c.textAlign = 'right'; c.fillText('今', w - 4, h - 6); c.textAlign = 'left';
+  c.fillText('10秒前', 4, h - 6); c.textAlign = 'right'; c.fillText('今', w - 4, h - 6);
+  c.fillText(String(top), w - 4, 14); c.textAlign = 'left';
   // 声が出ている区間
   c.fillStyle = 'rgba(224,166,58,.15)';
   let segStart = null;
@@ -736,18 +921,25 @@ function setMsg(text, color, key, sub) {
 }
 function onPhase() {
   if (S.phase === 'count') viewPos = 0;
+  if (S.phase === 'end') endAtLocal = performance.now();
   if (S.phase === 'fight' && navigator.vibrate) { try { navigator.vibrate(80); } catch(e) {} }
 }
 
 function updateUI() {
   const i = me();
-  const youTag = '<span class="you">あなた</span>';
   const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const nW = esc(S.names[0] || '…') , nE = esc(S.names[1] || '…');
-  const hW = i === 0 ? nW + youTag : nW, hE = i === 1 ? youTag + nE : nE;
+  const rateOf = k => (k === i ? (FB.ok ? FB.me.rating : START_RATING) : oppRating);
+  const label = k => {
+    let h = esc(S.names[k] || '…');
+    if (ranked) h = k === 0 ? h + `<span class="rt">${rateOf(k)}</span>` : `<span class="rt">${rateOf(k)}</span>` + h;
+    if (k === i) h = k === 0 ? h + '<span class="you">あなた</span>' : '<span class="you">あなた</span>' + h;
+    return h;
+  };
+  const hW = label(0), hE = label(1);
   if ($('#nmW').innerHTML !== hW) $('#nmW').innerHTML = hW;
   if ($('#nmE').innerHTML !== hE) $('#nmE').innerHTML = hE;
   $('#score').textContent = S.score[0] + '-' + S.score[1];
+  $('#modeTag').textContent = ranked ? 'レート戦' : '友達対戦';
   setMeter($('#mW'), S.v[0]);
   setMeter($('#mE'), S.v[1]);
   setMeter($('#mMe'), mic.level);
@@ -759,11 +951,17 @@ function updateUI() {
     btn.textContent = S.ready[i] ? '準備OK（取り消す）' : (S.phase === 'end' ? 'もう一番！' : '準備OK');
     btn.classList.toggle('ghost', S.ready[i]);
     const other = S.ready[1 - i];
-    st.textContent = S.ready[i] ? (other ? '' : '相手の準備を待っています…') : (other ? '相手は準備OK。準備OKを押してください' : '両者が準備OKで立ち合い');
+    let txt = S.ready[i] ? (other ? '' : '相手の準備を待っています…') : (other ? '相手は準備OK。準備OKを押してください' : '両者が準備OKで立ち合い');
+    if (S.phase === 'end' && ranked && lastDelta) {
+      const d = lastDelta.delta;
+      st.innerHTML = `レート ${lastDelta.rating}（<span class="${d >= 0 ? 'up' : 'down'}">${d >= 0 ? '+' : ''}${d}</span>）` + (txt ? '　' + esc(txt) : '');
+    } else st.textContent = txt;
     if (S.phase === 'wait') setMsg('', '', 'wait');
     else {
       const w = S.winner;
-      if (w === 2) setMsg('引き分け', 'var(--accent)', 'end2');
+      if (w === 2) setMsg('引き分け', 'var(--accent)', 'end2' + S.score.join());
+      else if (S.kind === 'throw') setMsg(S.reason + '！', w === i ? 'var(--accent)' : 'var(--sub)', 'endT' + w + S.score.join(),
+        (w === i ? 'あなたの勝ち' : 'あなたの負け') + '　' + S.names[w]);
       else setMsg(w === i ? '勝ち！' : '負け…', w === i ? 'var(--accent)' : 'var(--sub)', 'end' + w + S.score.join(),
         S.names[w] + '　' + S.reason);
     }
@@ -838,8 +1036,12 @@ function draw(t) {
   const lean1 = fighting ? .15 + Math.min(1, S.v[1] / 100) * .35 : (crouch ? .5 : 0);
   let x0 = contact - bodyR * 1.15, x1 = contact + bodyR * 1.15;
   if (S.phase === 'wait' || crouch) { x0 = cx - W * .11; x1 = cx + W * .11; }
-  drawRikishi(c, x0, ground, bodyR, 1, lean0, S.v[0], t, '#d2452f', S.phase === 'end' && S.winner === 1);
-  drawRikishi(c, x1, ground, bodyR, -1, lean1, S.v[1], t, '#3a5fcd', S.phase === 'end' && S.winner === 0);
+  // 投げ技：負けた方が勝った方の横へ投げ落とされる
+  const thrown = S.phase === 'end' && S.kind === 'throw';
+  const tk = thrown ? Math.min(1, (performance.now() - endAtLocal) / 650) : 0;
+  const ended = S.phase === 'end';
+  drawRikishi(c, x0, ground, bodyR, 1, lean0, S.v[0], t, '#d2452f', ended && S.winner === 1, thrown && S.winner === 1 ? tk : 0);
+  drawRikishi(c, x1, ground, bodyR, -1, lean1, S.v[1], t, '#3a5fcd', ended && S.winner === 0, thrown && S.winner === 0 ? tk : 0);
 
   // 声の衝撃波
   if (fighting) {
@@ -859,12 +1061,19 @@ function draw(t) {
   }
 }
 
-function drawRikishi(c, x, ground, r, dir, lean, vol, t, color, fallen) {
-  const shake = vol > 60 ? (Math.random() - .5) * (Math.min(vol, 160) - 60) * .08 : 0;
+// throwK: 0..1 投げられている途中（0 なら通常）
+function drawRikishi(c, x, ground, r, dir, lean, vol, t, color, fallen, throwK) {
+  const shake = vol > 60 && !fallen ? (Math.random() - .5) * (Math.min(vol, 160) - 60) * .08 : 0;
   c.save();
   c.translate(x + shake, ground);
-  if (fallen) c.rotate(-dir * 0.9);
-  c.rotate(dir * lean * .6);
+  if (throwK > 0) {
+    // 前へ弧を描いて宙を舞い、背中から落ちる
+    c.translate(dir * throwK * r * 2.6, -Math.sin(throwK * Math.PI) * r * 1.6);
+    c.rotate(dir * throwK * 1.75);
+  } else {
+    if (fallen) c.rotate(-dir * 0.9);
+    c.rotate(dir * lean * .6);
+  }
   // 脚
   c.fillStyle = '#e9b98f';
   c.strokeStyle = '#7a4f33'; c.lineWidth = 2;
@@ -878,7 +1087,7 @@ function drawRikishi(c, x, ground, r, dir, lean, vol, t, color, fallen) {
   c.beginPath(); c.moveTo(-r * .2, -r * .5); c.lineTo(r * .2, -r * .5); c.lineTo(r * .1, -r * .1); c.lineTo(-r * .1, -r * .1); c.fill();
   // 腕（相手へ突き出す）
   c.fillStyle = '#e9b98f';
-  c.save(); c.translate(dir * r * .6, -r * 1.45); c.rotate(dir * (-.2 - vol / 300));
+  c.save(); c.translate(dir * r * .6, -r * 1.45); c.rotate(dir * (-.2 - Math.min(vol, 150) / 300));
   c.beginPath(); c.ellipse(dir * r * .45, 0, r * .55, r * .2, 0, 0, Math.PI * 2); c.fill(); c.stroke();
   c.restore();
   // 頭
@@ -897,6 +1106,9 @@ function drawRikishi(c, x, ground, r, dir, lean, vol, t, color, fallen) {
   c.beginPath(); c.ellipse(hx + dir * r * .28, hy + r * .2, r * .1, open, 0, 0, Math.PI * 2); c.fill();
   c.restore();
 }
+
+fbInit();
+window.addEventListener('pagehide', () => { removeFromQueue(); });
 
 })();
 </script>

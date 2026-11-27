@@ -1,0 +1,47 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "voiceSumoPeers": {
+      "$peer": {
+        ".read": "auth != null",
+        ".write": "auth != null && ((!data.exists() && newData.child('uid').val() === auth.uid) || data.child('uid').val() === auth.uid)",
+        ".validate": "newData.hasChildren(['uid','createdAt'])",
+        "uid": { ".validate": "newData.isString() && (!data.exists() ? newData.val() === auth.uid : newData.val() === data.val())" },
+        "createdAt": { ".validate": "newData.isNumber() && (!data.exists() ? newData.val() === now : newData.val() === data.val())" },
+        "inbox": {
+          "$link": {
+            ".write": "auth != null && newData.child('fromUid').val() === auth.uid && root.child('voiceSumoLinks').child($link).child('aUid').val() === auth.uid && root.child('voiceSumoLinks').child($link).child('bId').val() === $peer",
+            ".validate": "newData.hasChildren(['fromUid','fromId']) && newData.child('fromUid').isString() && newData.child('fromId').isString()"
+          }
+        },
+        "$other": { ".validate": false }
+      }
+    },
+    "voiceSumoLinks": {
+      "$link": {
+        ".read": "auth != null && (!data.exists() || data.child('aUid').val() === auth.uid || data.child('bUid').val() === auth.uid)",
+        ".write": "auth != null && ((!data.exists() && newData.child('aUid').val() === auth.uid && root.child('voiceSumoPeers').child(newData.child('aId').val()).child('uid').val() === auth.uid && root.child('voiceSumoPeers').child(newData.child('bId').val()).child('uid').val() === newData.child('bUid').val()) || (!newData.exists() && (data.child('aUid').val() === auth.uid || data.child('bUid').val() === auth.uid)))",
+        ".validate": "newData.hasChildren(['aUid','bUid','aId','bId','createdAt','status'])",
+        "aUid": { ".validate": "newData.isString()" },
+        "bUid": { ".validate": "newData.isString()" },
+        "aId": { ".validate": "newData.isString() && newData.val().length <= 100" },
+        "bId": { ".validate": "newData.isString() && newData.val().length <= 100" },
+        "createdAt": { ".validate": "newData.isNumber()" },
+        "status": {
+          ".write": "auth != null && auth.uid === data.parent().child('bUid').val() && newData.val() === 'connected'",
+          ".validate": "newData.val() === 'opening' || newData.val() === 'connected'"
+        },
+        "aPackets": {
+          ".write": "auth != null && auth.uid === data.parent().child('aUid').val()",
+          "$type": { ".validate": "($type === 'hello' || $type === 'state' || $type === 'vol' || $type === 'ready' || $type === 'full') && newData.hasChildren(['seq','data']) && newData.child('seq').isNumber() && newData.child('seq').val() > 0 && newData.child('data').child('t').val() === $type" }
+        },
+        "bPackets": {
+          ".write": "auth != null && auth.uid === data.parent().child('bUid').val()",
+          "$type": { ".validate": "($type === 'hello' || $type === 'state' || $type === 'vol' || $type === 'ready' || $type === 'full') && newData.hasChildren(['seq','data']) && newData.child('seq').isNumber() && newData.child('seq').val() > 0 && newData.child('data').child('t').val() === $type" }
+        },
+        "$other": { ".validate": false }
+      }
+    }
+  }
+}

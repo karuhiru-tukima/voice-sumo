@@ -1,0 +1,6 @@
+.claude/
+.codex-tools/
+.codex-backups/
+.firebase/
+firebase-debug.log
+*-debug.log
